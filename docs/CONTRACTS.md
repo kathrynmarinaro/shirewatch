@@ -45,7 +45,7 @@ need to write a line of CSS, a date calculation, or a query against `tags` or
 | **Foundation** (done) | `schema.sql`, `config.example.php`, `.htaccess` ×4, `.gitignore`, `lib/bootstrap.php`, `lib/db.php`, `lib/auth.php`, `lib/dates.php`, `lib/layout.php`, `lib/tags.php`, `lib/media.php`, `lib/imageproc.php`, `lib/mailer.php`, `lib/vendor/`, `public/login.php`, `public/logout.php`, `public/assets/styles.css`, `public/assets/{api,swipe,inline-edit,reorder,menu,tagfield}.js`, `data/starter-tasks.php`, `tools/{test-harness,run-tests,make-hash,build-deploy,seed,install-starter-tasks,hosting-check,send-test-email}.php`, `docs/CONTRACTS.md`, `CLAUDE.md` |
 | **M1 · Tags** *(done)* | `public/tags.php`, `public/api/tag-*.php`, `public/assets/tags.js`, `public/assets/tagfield.js` |
 | **M2 · Media** *(done)* | `public/api/upload.php`, `public/api/worker.php`, `public/api/media-*.php`, `cron/process-queue.php`, `public/assets/upload.js`, `public/assets/lightbox.js` |
-| **M3 · Issues** | `public/issues.php`, `public/issue.php`, `lib/issues.php`, `public/api/issue-*.php`, `public/assets/issues.js` |
+| **M3 · Issues** *(done)* | `public/issues.php`, `public/issue.php`, `lib/issues.php`, `lib/render.php`, `public/api/issue-*.php`, `public/assets/{issues,issue}.js` |
 | **M4 · Maintenance** | `public/maintenance.php`, `public/task.php`, `lib/tasks.php`, `public/api/task-*.php`, `public/assets/maintenance.js` |
 | **M5 · Service & vendors** | `public/history.php`, `public/record.php`, `public/vendors.php`, `public/vendor.php`, `lib/records.php`, `lib/vendors.php`, `public/api/record-*.php`, `public/api/vendor-*.php`, `public/assets/{history,vendors}.js` |
 | **M6 · Dashboard & reminders** | `public/index.php`, `public/cron.php`, `lib/dashboard.php`, `tools/cron-reminders.php`, `public/api/timeline.php`, `public/assets/dashboard.js` |
@@ -428,6 +428,55 @@ end up with both `Kitchen ` and `kitchen`.
 `tags_set()` **silently drops ids that don't exist** rather than rejecting the
 save. A picker showing a tag someone deleted in another tab should cost you that
 one chip, not the whole form.
+
+---
+
+## 8b. Issues — `lib/issues.php`, and `lib/render.php`
+
+**Nothing outside `lib/issues.php` writes SQL against `issues` or
+`issue_updates`.** The dashboard reads through `issues_needing_action()` and
+`issues_upcoming_checks()` so there is one definition of "needs attention".
+
+| Function | Does |
+|---|---|
+| `issues_list($filters)` | `status`, `tag_ids`, `search`. Rows come back decorated with `tags` and `cover` |
+| `issue_get($id)` / `issue_updates($id)` | one issue / its timeline, **oldest first** |
+| `issue_create($data)` / `issue_save($id, $data)` | header fields + `tag_ids` |
+| `issue_add_update($id, $data)` | one check-in. Returns the id photos attach to |
+| `issue_delete_update($id)` / `issue_delete($id)` | remove, files included |
+| `issue_set_status($id, $status, $recordId?)` | the record link is **always optional** |
+| `issue_trend($updates)` | `worse` · `better` · `stable` · `''` |
+| `issues_needing_action($today)` / `issues_upcoming_checks($after)` | the dashboard's two reads |
+
+**`issue_recompute()` is the only writer of `severity`, `last_checked_on` and
+`next_check_on`.** Never set them yourself — every path that can change them
+already calls it. Three behaviours that follow, and that a later module must
+not break:
+
+- **A check-in with no severity does not wipe the rating.** "No change" is a
+  legitimate entry and is not a severity.
+- **A closed issue has `next_check_on = NULL`**, or a resolved crack sits on
+  the dashboard forever.
+- **An issue with an interval and no check-ins is due from `noticed_on`**, so
+  the one you logged and forgot still surfaces.
+
+**Tags AND rather than OR** in `issues_list()`. Kitchen + Plumbing means the
+kitchen plumbing problem, not everything in the kitchen plus everything
+plumbing.
+
+### `lib/render.php` — shared output
+
+`render_gallery($photos, ['strip'=>bool, 'id'=>string, 'date'=>string])` ·
+`render_photo()` · `render_documents($media)` · `render_severity(?int)` ·
+`render_stars(?float, ['number'=>bool])` · `render_tags($tags)` ·
+`render_cost(?string)`
+
+Every one **escapes its own output and returns a string**. Every one returns
+`''` for the unset case — that is how `NULL means nothing` is enforced in one
+place rather than in each template.
+
+Gallery tiles are real `<a>` elements to the detail image, so the photo is
+reachable with no JS; `lightbox.js` upgrades them.
 
 ---
 

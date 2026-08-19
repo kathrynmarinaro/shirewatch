@@ -60,6 +60,8 @@ require_once $appRoot . '/lib/dates.php';
 require_once $appRoot . '/lib/layout.php';
 require_once $appRoot . '/lib/tags.php';
 require_once $appRoot . '/lib/media.php';
+require_once $appRoot . '/lib/issues.php';
+require_once $appRoot . '/lib/render.php';
 
 /* ------------------------------------------------------------------ harness */
 
@@ -618,6 +620,203 @@ is_same(media_display_name(''), 'file', 'an empty name gets a placeholder');
 
 array_map('unlink', glob($tmpDir . '/*') ?: array());
 @rmdir($tmpDir);
+
+/* ============================================================ M3 · issues */
+
+section('M3 — Issues and timelines');
+
+foreach (array(
+    'lib/issues.php', 'lib/render.php',
+    'public/issues.php', 'public/issue.php',
+    'public/assets/issues.js', 'public/assets/issue.js',
+    'public/api/issue-save.php', 'public/api/issue-update.php',
+    'public/api/issue-update-delete.php', 'public/api/issue-status.php',
+    'public/api/issue-delete.php',
+) as $file) {
+    ok(is_file($appRoot . '/' . $file), "M3 ships $file");
+}
+
+foreach (glob($appRoot . '/public/api/issue-*.php') as $endpoint) {
+    $src  = (string) file_get_contents($endpoint);
+    $name = basename($endpoint);
+    ok(str_contains($src, 'require_login_api()') && str_contains($src, 'require_same_origin()'),
+        "$name is gated and CSRF-checked");
+}
+
+/* ---- creation and the derived columns ---------------------------------- */
+
+$kitchen  = tag_find(TAG_LOCATION, 'Kitchen');
+$plumbing = tag_find(TAG_CATEGORY, 'Plumbing');
+
+$id = issue_create(array(
+    'title'               => 'Drip under the sink',
+    'description'         => 'Only when the dishwasher runs.',
+    'noticed_on'          => '2026-01-10',
+    'check_interval_days' => 30,
+    'tag_ids'             => array($kitchen['id'], $plumbing['id']),
+));
+ok($id > 0, 'issue_create returns an id');
+
+$issue = issue_get($id);
+is_same($issue['status'], 'watching', 'a new issue starts as watching');
+is_same($issue['severity'], null, 'severity is unset unless given — never defaulted to 1');
+
+/* An issue with an interval and no check-ins is due from the day it was
+ * NOTICED. Otherwise it would never surface until somebody checked it once,
+ * which is precisely the thing you would forget to do. */
+is_same($issue['next_check_on'], '2026-02-09',
+    'a never-checked issue is still due, counted from when it was noticed');
+is_same($issue['last_checked_on'], null, 'and has no last-checked date');
+
+is_same(count(tags_for('issue', $id)), 2, 'tags are attached on create');
+
+/* ---- the timeline drives the derived columns --------------------------- */
+
+issue_add_update($id, array('noted_on' => '2026-02-01', 'note' => 'Same as before', 'severity' => 2));
+$issue = issue_get($id);
+is_same($issue['severity'], 2, 'a check-in with a severity sets the issue severity');
+is_same($issue['last_checked_on'], '2026-02-01', 'and the last-checked date');
+is_same($issue['next_check_on'], '2026-03-03', 'and moves the next check forward from it');
+
+/* A later note that does NOT re-rate must not wipe the rating. This is the
+ * subtle one: "no change" is a legitimate check-in and it is not a severity. */
+issue_add_update($id, array('noted_on' => '2026-03-05', 'note' => 'No change'));
+$issue = issue_get($id);
+is_same($issue['severity'], 2, 'a check-in with NO severity leaves the rating alone');
+is_same($issue['last_checked_on'], '2026-03-05', 'but still moves the last-checked date');
+
+issue_add_update($id, array('noted_on' => '2026-04-02', 'note' => 'Worse', 'severity' => 3));
+is_same(issue_get($id)['severity'], 3, 'a later rating overrides an earlier one');
+
+/* ---- trend ------------------------------------------------------------- */
+
+is_same(issue_trend(issue_updates($id)), 'worse', 'two ratings going up read as worse');
+
+$flat = issue_create(array('title' => 'Flat', 'noticed_on' => '2026-01-01'));
+issue_add_update($flat, array('noted_on' => '2026-02-01', 'severity' => 2));
+issue_add_update($flat, array('noted_on' => '2026-03-01', 'severity' => 2));
+is_same(issue_trend(issue_updates($flat)), 'stable', 'the same rating twice reads as stable');
+
+/* THE COMMON CASE, and it is not a failure: severity is optional, so most
+ * timelines carry none and there is no trend to report. Printing "stable"
+ * there would be inventing a judgement nobody made. */
+$unrated = issue_create(array('title' => 'Unrated', 'noticed_on' => '2026-01-01'));
+issue_add_update($unrated, array('noted_on' => '2026-02-01', 'note' => 'Looked at it'));
+issue_add_update($unrated, array('noted_on' => '2026-03-01', 'note' => 'Still there'));
+is_same(issue_trend(issue_updates($unrated)), '',
+    'a timeline with no recorded severity has NO trend, not a stable one');
+is_same(issue_trend(issue_updates($flat)) === '', false, 'while a rated one does');
+
+/* ---- deleting a check-in rolls the derived columns BACK ----------------- */
+
+$updates = issue_updates($id);
+$newest  = $updates[count($updates) - 1];
+issue_delete_update($newest['id']);
+$issue = issue_get($id);
+is_same($issue['last_checked_on'], '2026-03-05', 'deleting the newest check-in moves last-checked back');
+is_same($issue['severity'], 2, 'and restores the previous rating');
+is_same($issue['next_check_on'], '2026-04-04', 'and recomputes the next check');
+
+/* ---- status ------------------------------------------------------------ */
+
+ok(issue_set_status($id, ISSUE_RESOLVED), 'an issue can be resolved');
+$issue = issue_get($id);
+is_same($issue['resolved_on'], sw_today(), 'which stamps the date');
+is_same($issue['next_check_on'], null,
+    'A CLOSED ISSUE STOPS ASKING TO BE CHECKED — otherwise it sits on the dashboard forever');
+
+ok(issue_set_status($id, ISSUE_WATCHING), 'and can be reopened');
+ok(issue_get($id)['next_check_on'] !== null, 'which brings its check-back schedule back');
+is_same(issue_get($id)['resolved_on'], null, 'and clears the resolved date');
+
+/* Linking is always OPTIONAL — fix it yourself and it resolves with nothing
+ * attached. */
+issue_set_status($id, ISSUE_RESOLVED, null);
+is_same(issue_get($id)['resolved_by_record_id'], null, 'resolving with no record attached is fine');
+issue_set_status($id, ISSUE_DISMISSED, 55);
+is_same(issue_get($id)['resolved_by_record_id'], null,
+    'a record link is ignored on a status other than resolved — it would have no meaning');
+issue_set_status($id, ISSUE_WATCHING);
+
+/* ---- the list ---------------------------------------------------------- */
+
+$open = issues_list();
+ok(count($open) >= 3, 'the list defaults to the open statuses');
+
+$leaked = array_filter($open, static fn(array $r): bool => !in_array($r['status'], issue_open_statuses(), true));
+is_same($leaked, array(), 'and contains nothing resolved or dismissed');
+
+/* Tags AND rather than OR — a filter that widens as you add to it is one
+ * nobody can aim. */
+$both = issues_list(array('tag_ids' => array($kitchen['id'], $plumbing['id'])));
+is_same(count($both), 1, 'two tags narrow to issues carrying BOTH');
+
+$roofing = tag_find(TAG_CATEGORY, 'Roofing');
+is_same(count(issues_list(array('tag_ids' => array($kitchen['id'], $roofing['id'])))), 0,
+    'and an impossible combination matches nothing rather than everything');
+
+is_same(count(issues_list(array('search' => 'dishwasher'))), 1, 'search covers the description');
+is_same(count(issues_list(array('search' => 'zzzznothing'))), 0, 'and misses cleanly');
+is_same(issues_list(array('status' => array('nonsense'))), array(),
+    'an unknown status filter returns nothing rather than everything');
+
+ok(array_key_exists('tags', $open[0]) && array_key_exists('cover', $open[0]),
+    'the list decorates rows with tags and a cover in batch, not per row');
+
+/* ---- dashboard reads --------------------------------------------------- */
+
+issue_set_status($flat, ISSUE_ACTIVE);
+$action = issues_needing_action(sw_today());
+$actionIds = array_column($action, 'id');
+ok(in_array($flat, $actionIds, true), 'an active issue needs action regardless of dates');
+
+$future = issue_create(array(
+    'title' => 'Not yet', 'noticed_on' => sw_today(), 'check_interval_days' => 365,
+));
+ok(!in_array($future, array_column(issues_needing_action(sw_today()), 'id'), true),
+    'a watching issue whose check is a year out does not');
+ok(in_array($future, array_column(issues_upcoming_checks(sw_today()), 'id'), true),
+    'but it does appear in the forward timeline');
+
+/* ---- cleaning ---------------------------------------------------------- */
+
+is_same(issue_clean_severity(''), null, 'an empty severity is NULL');
+is_same(issue_clean_severity(0), null, 'zero is NULL, not level 1 — it is not a legal rating');
+is_same(issue_clean_severity(9), null, 'out of range is NULL, never clamped up to Urgent');
+is_same(issue_clean_severity('3'), 3, 'a numeric string is accepted');
+is_same(issue_clean_interval('0'), null, 'a zero interval means no reminder');
+is_same(issue_clean_date('nonsense'), null, 'an unreadable date is NULL');
+is_same(issue_clean_text('   '), null, 'whitespace-only text is NULL, not an empty string');
+
+ok(throws(static fn() => issue_create(array('title' => '   '))),
+    'an issue cannot be created without a title');
+
+/* ---- render helpers ---------------------------------------------------- */
+
+is_same(render_severity(null), '', 'render_severity draws NOTHING for an unset severity');
+ok(str_contains(render_severity(4), 'sev-4') && str_contains(render_severity(4), 'Urgent'),
+    'and a pill for a set one');
+is_same(render_stars(null), '', 'render_stars draws nothing for an unrated thing');
+ok(substr_count(render_stars(3.5), 'is-on') === 3 && str_contains(render_stars(3.5), 'is-half'),
+    'and three full plus a half for 3.5');
+is_same(render_cost(null), '', 'a NULL cost renders as nothing');
+is_same(render_cost('0.00'), '$0.00', 'while a real zero renders as zero — they are different facts');
+is_same(render_gallery(array()), '', 'an empty gallery renders nothing at all');
+ok(str_contains(render_tags(array(array('id' => 1, 'kind' => TAG_LOCATION, 'name' => 'Kitchen'))), 'is-location'),
+    'location chips are visually distinguished');
+
+/* Escaping. A title is user-entered and goes through several render paths. */
+$evil = array(array('id' => 1, 'kind' => TAG_LOCATION, 'name' => '<script>x</script>'));
+ok(!str_contains(render_tags($evil), '<script>'), 'render_tags escapes tag names');
+
+/* ---- delete ------------------------------------------------------------ */
+
+$doomed = issue_create(array('title' => 'Doomed', 'noticed_on' => '2026-01-01'));
+$upd = issue_add_update($doomed, array('noted_on' => '2026-02-01', 'note' => 'x'));
+ok(issue_delete($doomed), 'an issue deletes');
+is_same(issue_get($doomed), null, 'and is gone');
+is_same((int) q('SELECT COUNT(*) FROM issue_updates WHERE id = ?', array($upd))->fetchColumn(), 0,
+    'taking its timeline with it');
 
 /* =================================================================== done */
 
