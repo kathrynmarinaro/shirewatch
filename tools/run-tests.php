@@ -64,6 +64,8 @@ require_once $appRoot . '/lib/issues.php';
 require_once $appRoot . '/lib/render.php';
 require_once $appRoot . '/lib/tasks.php';
 require_once $appRoot . '/lib/records.php';
+require_once $appRoot . '/lib/dashboard.php';
+require_once $appRoot . '/tools/cron-reminders.php';
 
 /* ------------------------------------------------------------------ harness */
 
@@ -1143,6 +1145,168 @@ is_same(issue_get($issueId)['resolved_by_record_id'], $fix, 'resolving with the 
 record_delete($fix);
 ok(issue_get($issueId) !== null, 'deleting the record leaves the issue standing');
 is_same(issue_get($issueId)['resolved_by_record_id'], null, 'with the link nulled');
+
+/* ========================================= M6 · dashboard and reminders */
+
+section('M6 — Dashboard and reminders');
+
+foreach (array(
+    'lib/dashboard.php', 'public/index.php', 'public/cron.php',
+    'public/api/timeline.php', 'public/assets/dashboard.js',
+    'tools/cron-reminders.php',
+) as $file) {
+    ok(is_file($appRoot . '/' . $file), "M6 ships $file");
+}
+
+/* cron.php is the ONLY unauthenticated surface in the app. Every one of these
+ * is load-bearing and none is obvious from reading the file quickly. */
+$cronSrc = (string) file_get_contents($appRoot . '/public/cron.php');
+ok(str_contains($cronSrc, 'hash_equals('),
+    'cron.php compares its token with hash_equals, not === — === leaks it by timing');
+ok(str_contains($cronSrc, 'http_response_code(404)'),
+    'and answers 404, not 403 — a 403 confirms the endpoint is worth guessing at');
+ok(str_contains($cronSrc, "\$expected === ''"),
+    'and REFUSES an empty token rather than running unauthenticated');
+ok(!preg_match('/^\s*require_login_(page|api)\(\);/m', $cronSrc),
+    'it is deliberately not behind the session gate — a scheduler has no session');
+
+/* The whole point of the wrapper: one code path, not two. */
+ok(str_contains($cronSrc, 'cron_reminders_run('),
+    'cron.php calls the same function the command cron does');
+
+/* ---- a clean run ------------------------------------------------------- */
+
+q('DELETE FROM task_reminder_sends');
+q('DELETE FROM maintenance_tasks');
+
+$soon = task_create(array(
+    'title' => 'Flush water heater', 'recur_kind' => 'interval',
+    'interval_count' => 1, 'interval_unit' => 'year', 'next_due_on' => '2026-08-22',
+));
+$late = task_create(array(
+    'title' => 'Clean gutters', 'recur_kind' => 'months',
+    'recur_months' => '3,10', 'recur_day' => 15, 'next_due_on' => '2026-03-15',
+));
+$far = task_create(array(
+    'title' => 'Not for ages', 'recur_kind' => 'interval',
+    'interval_count' => 1, 'interval_unit' => 'year', 'next_due_on' => '2027-06-01',
+));
+
+$today = '2026-08-19';
+
+$dry = cron_reminders_run($today, true);
+is_same($dry['due'], 2, 'the cron picks up everything due inside the lead window, overdue included');
+is_same($dry['sent'], 0, 'a dry run sends nothing');
+is_same((int) q('SELECT COUNT(*) FROM task_reminder_sends')->fetchColumn(), 0,
+    'and claims nothing');
+
+/* ---- the ledger, which is the whole design -----------------------------
+
+ * There is no SMTP in the test environment, so the send FAILS — and that is
+ * the more interesting half to test anyway: a failed send must leave the row
+ * retryable, or a hung connection costs you the reminder permanently. */
+
+$run = cron_reminders_run($today);
+is_same($run['to_send'], 2, 'a real run claims the due tasks');
+is_same($run['sent'], 0, 'the send fails with no SMTP configured');
+is_same($run['failed'], 2, 'and is reported as failed rather than silently swallowed');
+ok($run['error'] !== '', 'with a reason attached for the ledger');
+
+$rows = q('SELECT * FROM task_reminder_sends ORDER BY task_id')->fetchAll();
+is_same(count($rows), 2, 'one ledger row per claimed task');
+is_same($rows[0]['sent_at'], null,
+    'A FAILED SEND LEAVES sent_at NULL, so tomorrow retries — a hung SMTP must not cost the reminder');
+ok($rows[0]['last_error'] !== null, 'and records why');
+
+/* Re-running claims the same pairs again, because nothing was delivered. */
+$again = cron_reminders_run($today);
+is_same($again['to_send'], 2, 'a retry claims the same pairs, since neither was delivered');
+is_same((int) q('SELECT attempts FROM task_reminder_sends WHERE task_id = ?', array($soon))->fetchColumn(), 2,
+    'and the attempt count climbs rather than a second row appearing (two real runs; the dry run claimed nothing)');
+is_same((int) q('SELECT COUNT(*) FROM task_reminder_sends')->fetchColumn(), 2,
+    'THE COMPOSITE PRIMARY KEY MAKES A SECOND ROW IMPOSSIBLE — a double-firing cron cannot double-send');
+
+/* Now mark them delivered by hand and prove the quiet path. */
+reminder_mark_sent($soon, '2026-08-22', '2026-08-19 06:00:00');
+reminder_mark_sent($late, '2026-03-15', '2026-08-19 06:00:00');
+
+$quiet = cron_reminders_run($today);
+is_same($quiet['to_send'], 0, 'once delivered, the same due dates are never emailed again');
+is_same($quiet['skipped'], 2, 'they are counted as already handled');
+
+/* ---- THE ASYMMETRY THAT IS THE POINT ------------------------------------
+ *
+ * The overdue gutters task was emailed about and is STILL OVERDUE. The cron
+ * moved nothing. That is what makes it sit on the dashboard getting louder
+ * instead of the app quietly forgiving you. */
+
+is_same(task_get($late)['next_due_on'], '2026-03-15',
+    'THE CRON DOES NOT MOVE A DUE DATE — the emailed task is still overdue');
+is_same(task_get($late)['last_completed_on'], null, 'and is still not completed');
+ok(in_array($late, array_column(tasks_due($today), 'id'), true),
+    'so it is still on the dashboard, which is the entire design');
+
+/* Completing it is what moves it — and that opens a NEW ledger key, so the
+ * next occurrence gets its own reminder. */
+task_complete($late, array('completed_on' => $today));
+$moved = task_get($late)['next_due_on'];
+ok($moved > $today, 'completing it moves the schedule forward');
+ok(!reminder_already_sent($late, $moved), 'and the new due date has never been emailed about');
+
+/* ---- the cap ----------------------------------------------------------- */
+
+is_same((int) cfg('reminders.max_per_run', 10), 10, 'the per-run cap is configured');
+
+/* ---- the dashboard reads ----------------------------------------------- */
+
+$now = dashboard_now($today);
+ok(array_key_exists('issues', $now) && array_key_exists('tasks', $now),
+    'dashboard_now keeps issues and maintenance in SEPARATE groups, per the brief');
+is_same($now['total'], count($now['issues']) + count($now['tasks']), 'and totals them');
+
+/* ---- the forward timeline ---------------------------------------------- */
+
+$page = dashboard_timeline($today, null, 5);
+is_same(count($page['rows']), 5, 'the timeline pages');
+is_same($page['done'], false, 'and reports there is more');
+ok($page['cursor'] !== null, 'with a cursor');
+ok(str_contains($page['cursor']['key'], ':'), 'whose key carries the kind and the id');
+
+$dates = array_column($page['rows'], 'on_date');
+$sorted = $dates; sort($sorted);
+is_same($dates, $sorted, 'rows come back in date order');
+ok(count(array_filter($dates, static fn(string $d): bool => $d <= $today)) === 0,
+    'and nothing on or before the cursor date leaks in');
+
+/* KEYSET, NOT OFFSET: the second page must start after the first page's last
+ * ROW, not after its last DATE — several tasks can share one day. */
+$second = dashboard_timeline($page['cursor']['date'], $page['cursor']['key'], 5);
+$firstKeys  = array_map(static fn(array $r): string => $r['kind'] . ':' . $r['id'] . '@' . $r['on_date'], $page['rows']);
+$secondKeys = array_map(static fn(array $r): string => $r['kind'] . ':' . $r['id'] . '@' . $r['on_date'], $second['rows']);
+is_same(array_intersect($firstKeys, $secondKeys), array(),
+    'the second page shares NO row with the first — the cursor is a full (date, kind, id) triple');
+
+/* Both kinds appear in one stream, which is the deliberate departure from the
+ * brief's "keep them separate" for the forward view. */
+$issueId = issue_create(array(
+    'title' => 'Watch the ceiling', 'noticed_on' => $today, 'check_interval_days' => 30,
+));
+$mixed = dashboard_timeline($today, null, 100);
+$kinds = array_unique(array_column($mixed['rows'], 'kind'));
+ok(in_array('issue', $kinds, true) && in_array('task', $kinds, true),
+    'the forward timeline COMBINES issues and maintenance — chronology is the organising principle there');
+
+/* An issue contributes exactly one row: its next check. A chain of them would
+ * be schedule the app never promised. */
+$mine = array_filter($mixed['rows'], static fn(array $r): bool => $r['kind'] === 'issue' && $r['id'] === $issueId);
+is_same(count($mine), 1, 'an issue contributes ONE check-back, never a projected chain');
+
+$projected = array_filter($mixed['rows'], static fn(array $r): bool => $r['projected'] === true);
+ok(count($projected) > 0, 'while recurring tasks do project forward');
+foreach ($projected as $row) {
+    is_same($row['kind'], 'task', 'and only tasks are ever marked projected');
+    break;
+}
 
 /* =================================================================== done */
 

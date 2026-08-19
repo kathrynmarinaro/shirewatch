@@ -48,7 +48,7 @@ need to write a line of CSS, a date calculation, or a query against `tags` or
 | **M3 · Issues** *(done)* | `public/issues.php`, `public/issue.php`, `lib/issues.php`, `lib/render.php`, `public/api/issue-*.php`, `public/assets/{issues,issue}.js` |
 | **M4 · Maintenance** *(done)* | `public/maintenance.php`, `public/task.php`, `lib/tasks.php`, `public/api/task-*.php`, `public/assets/maintenance.js` |
 | **M5 · Service & vendors** *(done)* | `public/history.php`, `public/record.php`, `public/vendors.php`, `public/vendor.php`, `lib/records.php`, `lib/vendors.php`, `public/api/record-*.php`, `public/api/vendor-*.php`, `public/assets/{history,vendors}.js` |
-| **M6 · Dashboard & reminders** | `public/index.php`, `public/cron.php`, `lib/dashboard.php`, `tools/cron-reminders.php`, `public/api/timeline.php`, `public/assets/dashboard.js` |
+| **M6 · Dashboard & reminders** *(done)* | `public/index.php`, `public/cron.php`, `lib/dashboard.php`, `tools/cron-reminders.php`, `public/api/timeline.php`, `public/assets/dashboard.js` |
 | **M7 · Integration** | `DEPLOY.txt`, `README.md`, `public/api/export.php`, `public/component-test.html` |
 
 Add your tests to `tools/run-tests.php` in a new `section()`. **Don't rewrite
@@ -609,3 +609,24 @@ Projected rows get `.is-projected` and are **not** stored.
 **Issue check-backs show only the next one.** A task genuinely recurs forever;
 an issue's next look-at depends on what you see when you look, so a chain of
 them would be invented schedule.
+
+### Built — `lib/dashboard.php`
+
+`dashboard_now($today)` → `{issues, tasks, total}`, the two groups kept
+separate. `dashboard_timeline($afterDate, $afterKey, $limit)` →
+`{rows, cursor, done}`; `cursor` is `{date, key}` where key is `"kind:id"`.
+`GET api/timeline.php?after=&key=` serves one page. **The first page is
+server-rendered** in `index.php` — the front door must not appear empty and
+fill in.
+
+### The reminder cron — `tools/cron-reminders.php`
+
+`cron_reminders_run($today, $dryRun)` → `{due, to_send, sent, skipped, failed,
+error}`. It self-executes only as an entry point, so `public/cron.php` requires
+it and gets the identical path.
+
+**It writes to `task_reminder_sends` and to nothing else in the schedule.**
+Claim first (`reminder_claim()`, an upsert against the composite primary key),
+then send one digest. A failed send leaves `sent_at` NULL so tomorrow retries.
+`sw_today()` is called once per run and passed down — a run straddling midnight
+must not judge a task due against one date and record the send against another.
