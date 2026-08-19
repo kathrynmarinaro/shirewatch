@@ -80,6 +80,25 @@ it is documented on the column.
 Seeded and **fully deletable**, the same rule as Grocery's four stores: nothing
 in the code may treat any seeded tag as special.
 
+**Renaming a tag renames it everywhere, and that is the point of the foreign
+key.** Issues, tasks, records and vendors link to `tags.id`, never to the text,
+so `UPDATE tags SET name = ?` is the entire rename — every issue already filed
+under "Emma Room" follows it to whatever you call it next, with nothing to
+migrate and no window where some rows say one thing and some say another.
+
+This looks inconsistent with §2.10, where `service_records.vendor_name` is a
+snapshot *string*. It isn't, and the difference is worth stating because the two
+sit ten lines apart in the schema:
+
+| | Rename | Delete |
+|---|---|---|
+| **Tags** (`tag_id` FK) | follows everywhere — the room is still the same room | cascades off the items |
+| **Vendor** (`vendor_id` FK + `vendor_name` snapshot) | follows | record survives, still naming who did the work |
+
+A room that gets renamed is the same room. A vendor that gets deleted is gone,
+but the 2023 invoice still has to say who sent it. Different questions, so
+different answers.
+
 ### 2.2 Recurrence: both anchors, declared per task — **settled**
 
 ```
@@ -152,16 +171,26 @@ yourself and the issue resolves with no record attached. Separately,
 `service_records.issue_id` links work to an issue — three visits can reference
 one issue while only one of them resolved it, which is why both columns exist.
 
-### 2.6 Issues carry a check-back interval — **my call, veto-able**
+### 2.6 Issues carry a check-back interval — **settled**
 
-`check_interval_days` (nullable) and `last_checked_on` on every issue. The
-dashboard surfaces **stale** issues — "you haven't looked at the basement crack
-in 4 months" — not just open ones.
+No longer veto-able: §2.13's timeline is built on "issue follow-ups", which is
+this column set. Cutting it now would empty half the stream.
 
-This is the column that makes the core idea actually happen. An issue you log
-and never revisit has one photo and no timeline, and the brief's whole premise
-is the second photo. It is two columns and one dashboard query, and it reuses
-the maintenance due-date machinery wholesale.
+`check_interval_days` and `last_checked_on` (both nullable), plus
+**`next_check_on DATE NULL`** — the first two are the rule, the third is the
+answer, stored rather than computed.
+
+That third column is not redundant. It is what lets an issue follow-up sit in
+the same `WHERE date <= ?` range scan as a maintenance task instead of forcing
+the dashboard into `last_checked_on + INTERVAL check_interval_days DAY`, which
+no index can help with and which the SQLite test harness cannot evaluate at all.
+Written in PHP on every check-in, exactly the discipline §2.2 applies to
+`next_due_on`. It is also what makes §2.13's unified timeline a two-branch union
+of identically-shaped queries rather than a special case.
+
+This is the column set that makes the core idea actually happen. An issue you
+log and never revisit has one photo and no timeline, and the brief's whole
+premise is the second photo.
 
 ### 2.7 Timeline updates carry severity — **my call**
 
@@ -233,33 +262,122 @@ annoying later.
 
 ### 2.12 Seeded locations are Kathryn's rooms, spelled her way — **settled**
 
-The eighteen `kind='location'` tags ship in `schema.sql` as:
+The twenty-four `kind='location'` tags ship in `schema.sql` as:
 
 > Library · Dining Room · Entryway · Living Room · Emma Bathroom · Emma Room ·
-> Guest room · Coat Closet · Main Bedroom · Main Bathroom · Sunroom ·
+> Guest Room · Coat Closet · Main Bedroom · Main Bathroom · Sunroom ·
 > Breakfast Room · Kitchen · Space Bathroom · Laundry Room · Garage ·
-> Ext Studio · Yard
+> Ext Studio · Yard · Roof · Septic Tank · Gutters · Chimney · Garage Attic ·
+> House Attic
 
-**Seeded exactly as written, and never normalized.** Not "Emma's Bathroom", not
-"Exterior Studio", and `Guest room` keeps its lowercase r. These are the names
-the house is called by the person using the app, and a later pass "tidying" them
-into title case breaks every filter the app has already been used with.
+**Seeded exactly as given, and never normalized.** Not "Emma's Bathroom", not
+"Exterior Studio" — `Ext Studio` stays `Ext Studio`. These are the names the
+house is called by the person using it, and a later pass "tidying" them breaks
+the recognition that makes a filter list scannable.
 
 This is Grocery's `grocery_items.name` rule applied to a seeded list: stored as
 typed, normalized never. It goes in `CLAUDE.md` under things that look like bugs
-but are decisions, because `Ext Studio` is exactly the kind of thing a future
-agent will helpfully expand.
+but are decisions, because `Ext Studio` is exactly the thing a future agent
+expands helpfully.
 
-Deletable and editable like every other tag (§2.1). Note there is no Roof,
-Basement or Attic in the list — if the house has them, they are one tap to add,
-but until then the seeded gutter-cleaning task has no location to point at.
+The one edit made on request: `Guest room` → **`Guest Room`**.
+
+The last six are what a house issue actually attaches to even though none is a
+room — a leak logs against `Roof`, not against the room whose ceiling it came
+through. They also give the seeded gutter and chimney tasks somewhere to point,
+which the original eighteen did not.
+
+**One assumption, flagged rather than guessed at silently:** "Chimney Garage
+Attic" is read as three tags — `Chimney`, `Garage Attic`, `House Attic` — on the
+grounds that a chimney-garage-attic is not a place. Say so if it was two.
+
+### 2.13 The dashboard is an action accordion over a forward timeline — **settled, and it revises the brief**
+
+Two stacked components, per your description:
+
+**1 · Needs action now** — a `<details class="accordion">`, open by default,
+holding everything already due: overdue and due-today maintenance, issues past
+their check-back date, and `active` issues. **Inside the accordion it stays
+split into an issues group and a maintenance group**, which is the brief's
+"separate sections for issues vs. maintenance (not combined)" honoured where it
+matters — when you are deciding what to do this morning, "call a plumber" and
+"change a filter" are different kinds of thing.
+
+**2 · The forward timeline** — one chronological stream, **deliberately
+combined**, scrolling from tomorrow into the future. Here the brief's
+separation is dropped on purpose: the organizing principle is *when*, and two
+parallel columns of dates is a calendar nobody can read. Each row still carries
+its type, so it is obvious what you are looking at.
+
+This is a real change to the brief and it is the right one, but it is a change,
+so it is written down rather than absorbed.
+
+#### How the timeline is actually built
+
+Both sources are stored `DATE` columns — `maintenance_tasks.next_due_on` (§2.2)
+and `issues.next_check_on` (§2.6). That is what makes this a `UNION ALL` of two
+identically-shaped, index-backed range scans instead of the differently-shaped
+union Personal CRM's `schema.sql` warns about:
+
+```sql
+SELECT next_due_on AS on_date, 'task'  AS kind, id, title FROM maintenance_tasks WHERE ...
+UNION ALL
+SELECT next_check_on,          'issue',         id, title FROM issues            WHERE ...
+ORDER BY on_date, kind, id
+```
+
+**Paged by keyset, never `OFFSET`.** The cursor is the last row's
+`(on_date, kind, id)`. Infinite scroll with `OFFSET` silently repeats or skips a
+row when anything is inserted mid-scroll, and on this screen the thing being
+inserted is usually the row you just completed.
+
+#### Recurring tasks are projected forward; issue check-backs are not
+
+A task stores only its *next* occurrence, so a quarterly filter change would
+appear once and the timeline would run dry after a month. So the renderer
+projects each recurring task forward over a horizon
+(`cfg('dashboard.horizon_months')`, default 24) using **the same
+`recur_next_after()` the completion path calls** — one implementation, so the
+timeline can never predict a date the app would not actually produce.
+
+Issue check-backs show **only the next one**. A maintenance task genuinely
+recurs forever; an issue's next look-at depends entirely on what you see when
+you look, so projecting a chain of them would be inventing schedule that does
+not exist.
+
+Projected occurrences are predictions, not rows: nothing is written, and doing a
+task late reshuffles everything after it. At a few dozen tasks over 24 months
+that is a few hundred rows built in PHP per page — cheaper than the round trip
+that fetched them.
+
+### 2.14 The other two seeded lists — **my call**
+
+Locations got specified; these did not, so they are named here rather than left
+to Foundation's judgement.
+
+**Categories** (systems, `property_id` NULL): Plumbing · Electrical · HVAC ·
+Roofing · Structural · Exterior · Interior · Appliances · Landscaping · Pest ·
+Safety · Septic
+
+**Work types** (vendor directory): Plumber · Electrician · HVAC · Roofer ·
+General Contractor · Handyman · Landscaper · Pest Control · Appliance Repair ·
+Septic Service · Chimney Sweep · Painter
+
+Note `Roofing` the category and `Roof` the location are not duplicates and both
+earn their place: the category answers *what kind of problem*, the location
+answers *where*. A soffit issue is `Exterior` + `Roof`.
 
 ---
 
 ## 3. Navigation — settled
 
 **Bottom tabs:** Dashboard · Issues · Maintenance · Vendors
-**Hamburger sheet:** Service History · Export data · Log out
+**Hamburger sheet:** Service History · **Rooms & Tags** · Export data · Log out
+
+**Rooms & Tags** is the editing screen for the three seeded lists (§2.1, §2.12,
+§2.14) — rename, reorder, add, delete, per `kind`. It is in the sheet rather
+than the tab bar because it is a thing you do twice a year, which is exactly the
+rule `menu.js` was ported to enforce.
 
 Straight port of Personal CRM's `page_menu()` + `assets/menu.js`, which already
 solved "four daily jobs in the bar, everything you do once in the sheet." Four
@@ -317,16 +435,22 @@ here links to something else.
 
 | # | Module | Owns |
 |---|---|---|
-| **M1** | Tags & taxonomy | the picker UI, tag management screen, filter chips |
+| **M1** | Tags & taxonomy | the picker UI, **the Rooms & Tags editing screen**, filter chips |
 | **M2** | Media pipeline | `api/upload.php`, `api/worker.php`, `cron/process-queue.php`, docs path, the gallery/lightbox component |
 | **M3** | Issues & timeline | `issues.php`, `issue.php`, the capture flow, timeline rendering, severity trend |
 | **M4** | Maintenance & recurrence | `maintenance.php`, the recurrence engine, `task_complete()`, the seeded starter list |
 | **M5** | Service history & vendors | `history.php`, `vendors.php`, `vendor.php`, cost/rating, auto-populated work history |
-| **M6** | Dashboard & reminders | `index.php` (issues and maintenance as **separate sections**, per the brief), `tools/cron-reminders.php`, `public/cron.php`, the email template |
+| **M6** | Dashboard & reminders | `index.php` — the action accordion over the forward timeline (§2.13), keyset paging, recurrence projection — plus `tools/cron-reminders.php`, `public/cron.php`, the email template |
 | **M7** | Integration & deploy | `DEPLOY.txt`, `README.md`, `CLAUDE.md`, export, full test pass |
 
 M5 is one module and not two: a vendor's rating and work history are *derived
 from* service records, so splitting them means building the same join twice.
+
+**M6 grew.** §2.13's timeline — keyset paging, forward projection of
+recurrences, a merged stream — is more than the dashboard the brief described,
+and it is now the second-largest module after M2. The projection reuses M4's
+`recur_next_after()` rather than reimplementing it, which is the only reason it
+is not larger still.
 
 **There is no import pass and no importer.** Confirmed: there is no existing
 repair log or vendor list to bring in, and first-run data gets typed in as it
@@ -365,7 +489,8 @@ issues              id, property_id, user_id NULL,
                     status ENUM('watching','active','resolved','dismissed'),
                     severity TINYINT NULL,          -- 1..4, NULL = unset, §2.7
                     noticed_on DATE,
-                    check_interval_days NULL, last_checked_on DATE NULL,  -- §2.6
+                    check_interval_days NULL, last_checked_on DATE NULL,
+                    next_check_on DATE NULL,        -- stored, not derived, §2.6
                     resolved_on DATE NULL,
                     resolved_by_record_id NULL,     -- SET NULL, §2.5
                     created_at
@@ -408,6 +533,10 @@ media               id, kind ENUM('photo','document'),
 login_attempts      -- ported unchanged
 ```
 
+Two indexes carry the dashboard and must not be dropped as redundant:
+`maintenance_tasks (next_due_on)` and `issues (next_check_on)`. They are what
+make §2.13's timeline two range scans, and the cron's due query a third.
+
 **`media` uses three nullable FK columns, not a polymorphic `owner_type`.**
 Exactly one is non-NULL. It costs two spare columns per row and buys real
 `ON DELETE CASCADE` — deleting an issue takes its photos with it, enforced by
@@ -429,9 +558,15 @@ iPhone photo), and the SMTP verification step —
 ## 8. What I'd cut if it runs long
 
 In order: the severity trend rendering (§2.7 — keep the column, drop the chart)
-· export · the tag management screen (seeded lists are editable in SQL until
-then) · `check_interval_days` (§2.6). **Nothing above the line** — the four
-modules in the brief all ship.
+· export · **the timeline's forward projection** (§2.13 — show each task's next
+occurrence only; the stream thins out but every date in it is real, and the
+projection can be added later without a schema change).
+
+**Off the cut list, where it used to be:** the Rooms & Tags screen. You asked
+for it by name, so it ships.
+
+**Nothing else above the line** — the four modules in the brief all ship, and so
+does the dashboard in §2.13.
 
 ---
 
@@ -446,5 +581,18 @@ modules in the brief all ship.
 3. **No import.** See §5.
 4. **Rooms.** §2.12, seeded verbatim.
 5. **Originals are kept.** §2.8, confirmed.
+
+Round two, folded in:
+
+6. **`Guest Room`** capitalized (§2.12).
+7. **Six locations added** — Roof, Septic Tank, Gutters, Chimney, Garage Attic,
+   House Attic (§2.12). One reading assumption flagged there.
+8. **Rooms & Tags editing screen**, in the hamburger, owned by M1 (§3, §5). Off
+   the cut list.
+9. **Renaming a room follows every item already tagged with it** (§2.1) — it is
+   what the `tag_id` foreign key was for, so this needed documenting, not
+   building.
+10. **The dashboard is respecified** (§2.13): action accordion over a combined
+    forward timeline. This one revises the brief; the reasoning is in place.
 
 Foundation can start.
