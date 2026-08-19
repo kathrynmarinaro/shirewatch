@@ -1,0 +1,8 @@
+# Uploads are static assets only — never execute anything in here.
+php_flag engine off
+<IfModule mod_headers.c>
+  Header set X-Content-Type-Options "nosniff"
+</IfModule>
+<FilesMatch "\.(php|phtml|phar|cgi|pl|py|sh|htaccess)$">
+  Require all denied
+</FilesMatch>
