@@ -194,8 +194,8 @@ Reasons it wins over resizing inline:
 Inspiration reaps originals because its images are references. Shirewatch's are
 evidence — an insurance claim or a contractor dispute is precisely the scenario
 these photos exist for, and a re-encoded 1600px WebP is not what you want to
-hand an adjuster. Storage cost is roughly 3 MB per photo; Hostinger has room.
-**This one is worth a second's thought — say if you'd rather reap them.**
+hand an adjuster. Storage cost is roughly 3 MB per photo — call it 1.5 GB after five years of
+heavy use, against the 50–100 GB a Hostinger plan gives you. **Confirmed.**
 
 ### 2.9 Documents are a separate path from photos — **my call**
 
@@ -230,6 +230,29 @@ The design tokens get **semantic names** in this app: `--accent`,
 looks like the suite — but re-skinning for release is three hex values in one
 `:root` block rather than a find-and-replace across a stylesheet. Cheap now,
 annoying later.
+
+### 2.12 Seeded locations are Kathryn's rooms, spelled her way — **settled**
+
+The eighteen `kind='location'` tags ship in `schema.sql` as:
+
+> Library · Dining Room · Entryway · Living Room · Emma Bathroom · Emma Room ·
+> Guest room · Coat Closet · Main Bedroom · Main Bathroom · Sunroom ·
+> Breakfast Room · Kitchen · Space Bathroom · Laundry Room · Garage ·
+> Ext Studio · Yard
+
+**Seeded exactly as written, and never normalized.** Not "Emma's Bathroom", not
+"Exterior Studio", and `Guest room` keeps its lowercase r. These are the names
+the house is called by the person using the app, and a later pass "tidying" them
+into title case breaks every filter the app has already been used with.
+
+This is Grocery's `grocery_items.name` rule applied to a seeded list: stored as
+typed, normalized never. It goes in `CLAUDE.md` under things that look like bugs
+but are decisions, because `Ext Studio` is exactly the kind of thing a future
+agent will helpfully expand.
+
+Deletable and editable like every other tag (§2.1). Note there is no Roof,
+Basement or Attic in the list — if the house has them, they are one tap to add,
+but until then the seeded gutter-cleaning task has no location to point at.
 
 ---
 
@@ -304,6 +327,13 @@ here links to something else.
 
 M5 is one module and not two: a vendor's rating and work history are *derived
 from* service records, so splitting them means building the same join twice.
+
+**There is no import pass and no importer.** Confirmed: there is no existing
+repair log or vendor list to bring in, and first-run data gets typed in as it
+happens. So M7 stays integration-and-deploy — unlike Book Tracker, where the
+importer was the longest pole in the build. First run is the seeded starter
+maintenance list (below) and the eighteen seeded locations (§2.12), on top of
+otherwise empty tables.
 
 **The starter maintenance list (M4)** ships as `INSERT IGNORE` rows in
 `schema.sql`, not a wizard — house-wide (HVAC filters, gutters, water heater
@@ -405,18 +435,16 @@ modules in the brief all ship.
 
 ---
 
-## 9. Input I need from you
+## 9. Answered — nothing is blocked
 
-1. **The email code you mentioned.** I found `personal-cms` and it looks
-   complete — `lib/mailer.php`, vendored PHPMailer, `tools/cron-reminders.php`,
-   `public/cron.php`, `tools/send-test-email.php`. If that is the one you meant,
-   nothing is blocked. If you have a newer or different version, drop it in.
-2. **"Art Scan."** The brief names it alongside Inspiration Board as a
-   convention source for the capture flow. It is not in this session. Is it a
-   sixth app I should read, or did you mean Inspiration Gallery?
-3. **Existing data.** Any spreadsheet or notes of past repairs, or a vendor
-   contact list? Book Tracker's importer was its longest pole; knowing now
-   changes whether M7 grows an import pass.
-4. **Your rooms.** The seeded location list is guessable, but seeding it with
-   *your* house's rooms means never editing it. A dozen names is enough.
-5. **§2.8** — originals kept, or reaped like Inspiration's?
+1. **Email.** `personal-cms` is the code. Its `lib/mailer.php`, vendored
+   PHPMailer, `lib/dates.php`, `tools/cron-reminders.php`, `public/cron.php` and
+   `tools/send-test-email.php` all port in Phase 0.
+2. **"Art Scan" is the Inspiration Gallery.** There is no sixth app; the brief
+   names one thing twice. Every capture-flow convention in this plan comes from
+   `inspiration`.
+3. **No import.** See §5.
+4. **Rooms.** §2.12, seeded verbatim.
+5. **Originals are kept.** §2.8, confirmed.
+
+Foundation can start.
