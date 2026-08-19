@@ -44,7 +44,7 @@ need to write a line of CSS, a date calculation, or a query against `tags` or
 |---|---|
 | **Foundation** (done) | `schema.sql`, `config.example.php`, `.htaccess` ×4, `.gitignore`, `lib/bootstrap.php`, `lib/db.php`, `lib/auth.php`, `lib/dates.php`, `lib/layout.php`, `lib/tags.php`, `lib/media.php`, `lib/imageproc.php`, `lib/mailer.php`, `lib/vendor/`, `public/login.php`, `public/logout.php`, `public/assets/styles.css`, `public/assets/{api,swipe,inline-edit,reorder,menu,tagfield}.js`, `data/starter-tasks.php`, `tools/{test-harness,run-tests,make-hash,build-deploy,seed,install-starter-tasks,hosting-check,send-test-email}.php`, `docs/CONTRACTS.md`, `CLAUDE.md` |
 | **M1 · Tags** *(done)* | `public/tags.php`, `public/api/tag-*.php`, `public/assets/tags.js`, `public/assets/tagfield.js` |
-| **M2 · Media** | `public/api/upload.php`, `public/api/worker.php`, `public/api/media-*.php`, `cron/process-queue.php`, `public/assets/upload.js`, `public/assets/lightbox.js` |
+| **M2 · Media** *(done)* | `public/api/upload.php`, `public/api/worker.php`, `public/api/media-*.php`, `cron/process-queue.php`, `public/assets/upload.js`, `public/assets/lightbox.js` |
 | **M3 · Issues** | `public/issues.php`, `public/issue.php`, `lib/issues.php`, `public/api/issue-*.php`, `public/assets/issues.js` |
 | **M4 · Maintenance** | `public/maintenance.php`, `public/task.php`, `lib/tasks.php`, `public/api/task-*.php`, `public/assets/maintenance.js` |
 | **M5 · Service & vendors** | `public/history.php`, `public/record.php`, `public/vendors.php`, `public/vendor.php`, `lib/records.php`, `lib/vendors.php`, `public/api/record-*.php`, `public/api/vendor-*.php`, `public/assets/{history,vendors}.js` |
@@ -321,6 +321,45 @@ empty rather than throwing.
 ```
 
 A batch **never fails as a whole** because one file in it was wrong.
+
+### The endpoints M3 and M5 call
+
+| Endpoint | Takes | Notes |
+|---|---|---|
+| `POST api/upload.php` | multipart: `files[]`, `owner_type`, `owner_id` | **The owner row must already exist** — save the issue/record first, then attach photos. Returns `owner_not_found` otherwise |
+| `POST api/worker.php` | — | drains `cfg('media.batch')` items. `{processed, remaining, results}` |
+| `POST api/media-delete.php` | `{id}` | row and files. No undo |
+| `POST api/media-caption.php` | `{id, caption}` | empty string stores `NULL` |
+| `POST api/media-reorder.php` | `{ids: [...]}` | new top-to-bottom order |
+
+### Wiring the browser side
+
+```js
+import { attachUpload }   from './upload.js';
+import { attachLightbox } from './lightbox.js';
+
+attachUpload('#add-photo', {
+  ownerType: 'issue_update', ownerId: 41,
+  capture: 'single',                       // or 'batch'
+  onDone: (created) => refreshGallery(),
+  onProgress: (text) => setPill(text),     // null when finished
+});
+
+attachLightbox('#photos');                 // reads the gallery's own DOM
+```
+
+`attachUpload` handles the drain loop itself. **`onProgress` is called with a
+string while working and `null` when done** — render it into `.queue-pill`.
+
+`attachLightbox` needs no data: it reads `href`, `data-original`,
+`data-caption` and `data-date` off each gallery link. So render the gallery
+items as real `<a>` elements pointing at the detail image, and the viewer is a
+progressive enhancement rather than the only route to the photo.
+
+**`upload.js` does not go through `api.js`** — `FormData` needs the browser to
+set `Content-Type` so it can include the multipart boundary. It therefore sends
+the `X-Requested-With` header itself, and a test asserts both files agree on
+the value.
 
 Three things the queue guarantees:
 

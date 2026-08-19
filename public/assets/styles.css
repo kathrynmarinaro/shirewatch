@@ -1367,3 +1367,131 @@ h2 { font-size: 1.1rem; font-weight: 600; margin: 26px 0 10px; color: var(--head
   z-index: 60;
 }
 .toast.is-visible { opacity: 1; transform: translate(-50%, 0); }
+
+/* -------------------------------------------------------------- lightbox
+
+   Full-screen photo viewer (assets/lightbox.js). The galleries render 96px
+   squares and this app is about comparing one photo of a crack with a later
+   photo of the same crack, so tapping has to open something big.
+
+   Fixed and above everything, including the tab bar — this is the one overlay
+   that genuinely wants the whole screen, and a tab bar visible under a photo
+   invites a tap that loses your place in the set. */
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #14171899;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  /* The module pages on horizontal swipe, so the browser must not claim the
+     gesture as a pan first. */
+  touch-action: none;
+}
+
+.lightbox-img {
+  max-width: 100%;
+  /* Leaves room for the bar without overlapping it, and for the notch. */
+  max-height: calc(100% - 132px - var(--safe-bottom));
+  object-fit: contain;
+  border-radius: 4px;
+}
+
+.lightbox-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px calc(14px + var(--safe-bottom));
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.72));
+  color: #fff;
+  font-size: 0.85rem;
+}
+.lightbox-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+.lightbox-text strong { font-weight: 600; }
+.lightbox-text span { opacity: 0.75; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* The original is one tap away and LABELLED. The viewer shows the 1600px copy
+   because paging a timeline at full resolution is tens of megabytes over a
+   phone connection — but "full resolution" is the thing you want in front of
+   an adjuster, so it must be reachable and it must say so. */
+.lightbox-full {
+  flex: 0 0 auto;
+  min-height: var(--tap);
+  display: flex;
+  align-items: center;
+  color: #fff;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.lightbox-count { flex: 0 0 auto; opacity: 0.6; font-variant-numeric: tabular-nums; }
+
+.lightbox-close,
+.lightbox-nav {
+  position: absolute;
+  width: var(--tap);
+  height: var(--tap);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.4);
+  color: #fff;
+  font-size: 1.6rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.lightbox-close { top: calc(12px + var(--safe-top)); right: 12px; }
+.lightbox-nav { top: 50%; transform: translateY(-50%); font-size: 2rem; }
+.lightbox-nav.is-prev { left: 8px; }
+.lightbox-nav.is-next { right: 8px; }
+
+/* Below 480px the arrows sit under the thumb and over the photo, and swiping
+   is the gesture anyone actually uses. Keep them for keyboard and mouse, out
+   of the way on a phone. */
+@media (max-width: 480px) {
+  .lightbox-nav { display: none; }
+}
+
+/* --------------------------------------------------------- upload progress
+
+   The queue pill. Shown while api/worker.php drains, hidden otherwise.
+   Sits above the tab bar rather than over it — the app stays usable while
+   photos process, which is the entire point of not resizing inline. */
+.queue-pill {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(var(--tap) + 16px + var(--safe-bottom));
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 16px;
+  border-radius: 999px;
+  background: #2b3134;
+  color: #fff;
+  font-size: 0.85rem;
+  z-index: 55;
+}
+.queue-spinner {
+  width: 13px;
+  height: 13px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: queue-spin 0.7s linear infinite;
+}
+@keyframes queue-spin { to { transform: rotate(360deg); } }
+
+/* Respect a reduced-motion preference: the pill still says what it is doing,
+   it just stops spinning. */
+@media (prefers-reduced-motion: reduce) {
+  .queue-spinner { animation: none; }
+}

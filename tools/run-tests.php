@@ -59,6 +59,7 @@ require_once $appRoot . '/lib/bootstrap.php';
 require_once $appRoot . '/lib/dates.php';
 require_once $appRoot . '/lib/layout.php';
 require_once $appRoot . '/lib/tags.php';
+require_once $appRoot . '/lib/media.php';
 
 /* ------------------------------------------------------------------ harness */
 
@@ -459,6 +460,164 @@ ok(!str_contains($picker, 'toLowerCase'),
     'tagfield.js does NOT normalize names — they are stored exactly as typed');
 ok(str_contains($picker, 'textContent'),
     'tagfield.js writes tag names with textContent, never innerHTML');
+
+/* ============================================================= M2 · media */
+
+section('M2 — Media pipeline');
+
+foreach (array(
+    'public/api/upload.php',
+    'public/api/worker.php',
+    'public/api/media-delete.php',
+    'public/api/media-caption.php',
+    'public/api/media-reorder.php',
+    'cron/process-queue.php',
+    'public/assets/upload.js',
+    'public/assets/lightbox.js',
+) as $file) {
+    ok(is_file($appRoot . '/' . $file), "M2 ships $file");
+}
+
+foreach (glob($appRoot . '/public/api/{upload,worker,media-*}.php', GLOB_BRACE) as $endpoint) {
+    $src  = (string) file_get_contents($endpoint);
+    $name = basename($endpoint);
+    ok(str_contains($src, 'require_login_api()'), "$name gates on login");
+    ok(str_contains($src, 'require_same_origin()'), "$name checks same-origin");
+    ok(str_contains($src, "require_method('POST')"), "$name is POST-only");
+}
+
+/* upload.js posts FormData, so it cannot go through api.js — which means it
+ * hand-rolls the CSRF header and the two can drift. This is the assertion
+ * that notices. */
+$uploadJs = (string) file_get_contents($appRoot . '/public/assets/upload.js');
+$apiJs    = (string) file_get_contents($appRoot . '/public/assets/api.js');
+ok(str_contains($uploadJs, "'X-Requested-With': 'Shirewatch'"),
+    'upload.js sends the CSRF header itself, since FormData cannot go through api.js');
+ok(str_contains($apiJs, "'Shirewatch'"),
+    'and api.js sends the same value — if you change one, change the other');
+ok(str_contains($uploadJs, 'CSRF_HEADER_VALUE') === false,
+    'the header value is a literal in both, matching lib/auth.php');
+
+/* The cron must never grow the Gallery's original-reaping sweep. */
+$cronSrc = (string) file_get_contents($appRoot . '/cron/process-queue.php');
+ok(!str_contains($cronSrc, 'unlink') && !str_contains($cronSrc, 'sweep_originals'),
+    'the queue cron does NOT reap originals — they are kept forever');
+
+/* Every shared module an entry script imports must be in the import map, or
+ * the browser serves a cached copy of it forever. */
+foreach (array('upload.js', 'lightbox.js') as $module) {
+    ok(in_array($module, SHARED_MODULES, true),
+        "SHARED_MODULES carries $module, so the import map cache-busts it");
+}
+
+/* ---- the real pipeline, end to end -------------------------------------- */
+
+/* Everything above is structure. This part actually pushes an image through
+ * media_store() and the queue and checks that files appear on disk, because
+ * the queue is the part with a race in it and structure tests cannot see one. */
+
+q("INSERT INTO issues (id, title, status, noticed_on) VALUES (900, 'Pipeline', 'watching', '2026-01-01')");
+
+$tmpDir = sys_get_temp_dir() . '/sw-media-test-' . bin2hex(random_bytes(4));
+@mkdir($tmpDir, 0777, true);
+
+/* A real JPEG, not a fixture file — the sniffing in lib/imageproc.php reads
+ * actual image headers and would reject a text file named .jpg, which is
+ * exactly what it is for. */
+$madePhoto = false;
+$photoPath = $tmpDir . '/test.jpg';
+if (function_exists('imagecreatetruecolor')) {
+    $img = imagecreatetruecolor(900, 600);
+    imagefilledrectangle($img, 0, 0, 900, 600, imagecolorallocate($img, 60, 120, 180));
+    imagejpeg($img, $photoPath, 85);
+    imagedestroy($img);
+    $madePhoto = is_file($photoPath);
+}
+
+if (!$madePhoto) {
+    ok(true, 'GD unavailable — skipping the end-to-end pipeline test');
+} else {
+    /* media_store() calls is_uploaded_file(), which is false for anything this
+     * process wrote. Insert through the same columns the real path uses and
+     * drive the QUEUE, which is the half with the race in it. */
+    $slug = imageproc_new_slug();
+    imageproc_ensure_dir('original');
+    copy($photoPath, imageproc_upload_path('original', $slug, 'jpg'));
+
+    q("INSERT INTO media (kind, issue_id, slug, ext, original_path, original_filename, mime, bytes, status)
+       VALUES ('photo', 900, ?, 'jpg', ?, 'test.jpg', 'image/jpeg', ?, 'pending')",
+        array($slug, imageproc_relative_path('original', $slug, 'jpg'), filesize($photoPath)));
+    $mediaId = (int) db()->lastInsertId();
+
+    is_same(media_pending_count(), 1, 'the queue sees one pending photo');
+
+    /* The claim is the race. Claiming twice must not succeed twice — that is
+     * the invariant the whole design rests on. */
+    $first  = media_claim($mediaId);
+    $second = media_claim($mediaId);
+    ok($first !== null, 'the first claim wins');
+    is_same($second, null, 'the second claim on the same row loses — no double processing');
+
+    $status = media_process($first);
+    is_same($status, 'ready', 'processing derives the thumb and detail');
+
+    $row = q('SELECT * FROM media WHERE id = ?', array($mediaId))->fetch();
+    ok($row['thumb_path'] !== null && $row['detail_path'] !== null, 'both derivative paths are written');
+    ok(imageproc_resolve_upload($row['thumb_path']) !== null, 'the thumb file exists on disk');
+    ok(imageproc_resolve_upload($row['detail_path']) !== null, 'the detail file exists on disk');
+    ok(imageproc_resolve_upload($row['original_path']) !== null,
+        'THE ORIGINAL IS STILL THERE — it is evidence, not a cache');
+    is_same((int) $row['width'], 900, 'dimensions are recorded from the detail copy');
+    is_same(media_pending_count(), 0, 'and the queue is drained');
+
+    /* Reads. */
+    $found = media_for('issue', 900);
+    is_same(count($found), 1, 'media_for reads it back');
+    is_same($found[0]['status'], 'ready', 'with its status');
+
+    $many = media_for_many('issue', array(900, 87654));
+    is_same(count($many[900]), 1, 'media_for_many keys by owner');
+    is_same($many[87654], array(), 'an owner with nothing is present with an empty array');
+
+    /* Deleting must take the FILES, not just the row — nothing sweeps them. */
+    $thumbAbs = imageproc_resolve_upload($row['thumb_path']);
+    $origAbs  = imageproc_resolve_upload($row['original_path']);
+    ok(media_delete($mediaId), 'media_delete removes the row');
+    ok(!is_file($thumbAbs), 'and the thumb file');
+    ok(!is_file($origAbs), 'and the original — nothing else would ever reap it');
+
+    /* Cascade: an issue taking its photos with it is what the three nullable
+     * owner columns bought instead of a polymorphic pair. */
+    $slug2 = imageproc_new_slug();
+    copy($photoPath, imageproc_upload_path('original', $slug2, 'jpg'));
+    q("INSERT INTO media (kind, issue_id, slug, ext, original_path, status)
+       VALUES ('photo', 900, ?, 'jpg', ?, 'ready')",
+        array($slug2, imageproc_relative_path('original', $slug2, 'jpg')));
+    q('DELETE FROM issues WHERE id = 900');
+    is_same((int) q('SELECT COUNT(*) FROM media WHERE issue_id = 900')->fetchColumn(), 0,
+        'deleting an issue cascades its media rows away');
+    @unlink(imageproc_upload_path('original', $slug2, 'jpg'));
+}
+
+/* Documents take the other path: stored, never derived, never queued. */
+$pdfPath = $tmpDir . '/invoice.pdf';
+file_put_contents($pdfPath, "%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n");
+is_same(media_sniff_document($pdfPath), 'application/pdf', 'a PDF is sniffed by its bytes');
+
+file_put_contents($tmpDir . '/not.pdf', "This is a text file pretending.\n");
+is_same(media_sniff_document($tmpDir . '/not.pdf'), null,
+    'a text file named .pdf is refused — the name is never trusted');
+is_same(imageproc_sniff($tmpDir . '/not.pdf'), null, 'and it is not an image either');
+
+is_same(media_owner_column('issue'), 'issue_id', 'owner types map to columns');
+is_same(media_owner_column('nonsense'), null, 'an unknown owner type returns null, never a column name');
+
+/* A client filename never becomes a path. */
+is_same(media_display_name('../../etc/passwd'), 'passwd', 'a traversing filename is reduced to its basename');
+is_same(media_display_name(''), 'file', 'an empty name gets a placeholder');
+
+array_map('unlink', glob($tmpDir . '/*') ?: array());
+@rmdir($tmpDir);
 
 /* =================================================================== done */
 

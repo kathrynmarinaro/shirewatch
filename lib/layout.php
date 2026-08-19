@@ -68,6 +68,7 @@ function nav_tabs(): array
  * the feature modules actually import. */
 const SHARED_MODULES = array(
     'api.js', 'swipe.js', 'inline-edit.js', 'reorder.js', 'menu.js', 'tagfield.js',
+    'upload.js', 'lightbox.js',
 );
 
 /**
