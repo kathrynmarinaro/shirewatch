@@ -47,7 +47,7 @@ need to write a line of CSS, a date calculation, or a query against `tags` or
 | **M2 · Media** *(done)* | `public/api/upload.php`, `public/api/worker.php`, `public/api/media-*.php`, `cron/process-queue.php`, `public/assets/upload.js`, `public/assets/lightbox.js` |
 | **M3 · Issues** *(done)* | `public/issues.php`, `public/issue.php`, `lib/issues.php`, `lib/render.php`, `public/api/issue-*.php`, `public/assets/{issues,issue}.js` |
 | **M4 · Maintenance** *(done)* | `public/maintenance.php`, `public/task.php`, `lib/tasks.php`, `public/api/task-*.php`, `public/assets/maintenance.js` |
-| **M5 · Service & vendors** | `public/history.php`, `public/record.php`, `public/vendors.php`, `public/vendor.php`, `lib/records.php`, `lib/vendors.php`, `public/api/record-*.php`, `public/api/vendor-*.php`, `public/assets/{history,vendors}.js` |
+| **M5 · Service & vendors** *(done)* | `public/history.php`, `public/record.php`, `public/vendors.php`, `public/vendor.php`, `lib/records.php`, `lib/vendors.php`, `public/api/record-*.php`, `public/api/vendor-*.php`, `public/assets/{history,vendors}.js` |
 | **M6 · Dashboard & reminders** | `public/index.php`, `public/cron.php`, `lib/dashboard.php`, `tools/cron-reminders.php`, `public/api/timeline.php`, `public/assets/dashboard.js` |
 | **M7 · Integration** | `DEPLOY.txt`, `README.md`, `public/api/export.php`, `public/component-test.html` |
 
@@ -519,6 +519,37 @@ uses, so the two can never disagree.
 **A rule that can never produce a date is refused at creation**, not stored. A
 task that silently never comes due is indistinguishable from nothing being due,
 which is the worst failure this app has.
+
+---
+
+## 8d. Records and vendors — `lib/records.php`, `lib/vendors.php`
+
+| Function | Does |
+|---|---|
+| `records_list($filters)` | `vendor_id`, `issue_id`, `task_id`, `year`, `tag_ids`, `search`. Decorated with tags and media |
+| `record_get($id)` / `record_save($id, $data)` / `record_delete($id)` | |
+| `records_years()` | years that have work in them |
+| `vendors_list($filters)` / `vendor_get($id)` | rating and job counts attached |
+| `vendor_save($id, $data)` / `vendor_delete($id)` | |
+| `vendor_rating($id)` / `vendor_ratings_for($ids)` | `{rating, average, rated_jobs, jobs, total_cost}` |
+
+**A vendor's rating is computed, never stored.** `rating` is what to show
+(override, else average); `average` is kept separately so a screen can print
+both. `COUNT(rating)` and `AVG(rating)` ignore NULLs — an unrated job is not a
+zero.
+
+**`vendor_name` is snapshotted onto each record on write and never synced.**
+Deleting a vendor nulls `vendor_id` and leaves the string.
+
+**`record_delete()` clears `issues.resolved_by_record_id` and
+`task_completions.service_record_id` itself.** Those columns have no foreign
+key — `resolved_by_record_id` would point forward at a table created later in
+`schema.sql`, and SQLite cannot add one by ALTER, so a database-enforced
+version would be absent from the tests. **Nothing outside `lib/records.php`
+may delete a `service_records` row.**
+
+**Cost: empty stores `NULL` ("not recorded"), a typed `0` stores `0.00`.**
+`render_cost(null)` is `''`; `render_cost('0.00')` is `$0.00`.
 
 ---
 

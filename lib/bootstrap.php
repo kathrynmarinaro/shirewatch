@@ -244,8 +244,23 @@ function app_name(): string
     return is_string($name) && $name !== '' ? $name : 'Shirewatch';
 }
 
-/** Escape for HTML output. Shorthand because templates are full of it. */
-function h(?string $raw): string
+/**
+ * Escape for HTML output. Shorthand because templates are full of it.
+ *
+ * ACCEPTS SCALARS, NOT JUST STRINGS — a deliberate widening from the siblings,
+ * which all declare `?string`, and worth backporting to them.
+ *
+ * Under declare(strict_types=1) the narrow signature makes `h($n)` a fatal
+ * TypeError for any integer, and a template is exactly where that happens by
+ * accident: PHP silently converts a numeric string array key to an int, so
+ * `$byYear['2026']` comes back out of the array as `2026`, and a screen that
+ * looks finished dies on a year heading.
+ *
+ * That failure mode is the one this app's fail-soft rule exists to prevent —
+ * one bad value should degrade one row, never take out a screen. Escaping is
+ * not the place to be strict about types; it is the place to be total.
+ */
+function h(string|int|float|null $raw): string
 {
     return htmlspecialchars((string) $raw, ENT_QUOTES, 'UTF-8');
 }

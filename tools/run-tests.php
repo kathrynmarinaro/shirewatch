@@ -63,6 +63,7 @@ require_once $appRoot . '/lib/media.php';
 require_once $appRoot . '/lib/issues.php';
 require_once $appRoot . '/lib/render.php';
 require_once $appRoot . '/lib/tasks.php';
+require_once $appRoot . '/lib/records.php';
 
 /* ------------------------------------------------------------------ harness */
 
@@ -357,6 +358,12 @@ section('Shared helpers');
 
 is_same(h('<b>&</b>'), '&lt;b&gt;&amp;&lt;/b&gt;', 'h() escapes');
 is_same(h(null), '', 'h(null) is an empty string, not "null"');
+/* h() takes scalars, not only strings. Under strict_types the narrow
+ * signature that the siblings use makes h($year) a fatal TypeError, and a
+ * template is exactly where an int arrives by accident — PHP turns a numeric
+ * string array key into an int on the way in. */
+is_same(h(2026), '2026', 'h() accepts an int rather than fatally rejecting it');
+is_same(h(12.5), '12.5', 'and a float');
 is_same(app_name(), 'Shirewatch', 'app_name() reads the config value');
 is_same(cfg('db.charset'), 'utf8mb4', 'cfg() reads a dotted path');
 is_same(cfg('nope.nothing', 'fallback'), 'fallback', 'cfg() falls back');
@@ -999,6 +1006,143 @@ is_same($backAgain['recur_months'], null, 'and switching back nulls the months')
 
 is_same(task_clean_from('nonsense'), 'completion', 'an unknown anchor falls back to from-completion');
 is_same(task_clean_from('due'), 'due', 'and "due" is honoured');
+
+/* ============================================ M5 · records and vendors */
+
+section('M5 — Service history and vendors');
+
+foreach (array(
+    'lib/records.php', 'lib/vendors.php',
+    'public/history.php', 'public/record.php', 'public/vendors.php', 'public/vendor.php',
+    'public/assets/history.js', 'public/assets/vendors.js',
+    'public/api/record-save.php', 'public/api/record-delete.php',
+    'public/api/vendor-save.php', 'public/api/vendor-delete.php',
+) as $file) {
+    ok(is_file($appRoot . '/' . $file), "M5 ships $file");
+}
+
+foreach (glob($appRoot . '/public/api/{record,vendor}-*.php', GLOB_BRACE) as $endpoint) {
+    $src = (string) file_get_contents($endpoint);
+    ok(str_contains($src, 'require_login_api()') && str_contains($src, 'require_same_origin()'),
+        basename($endpoint) . ' is gated and CSRF-checked');
+}
+
+/* ---- vendors and the computed rating ----------------------------------- */
+
+$plumberTag = tag_find(TAG_WORK_TYPE, 'Plumber');
+$ace = vendor_save(null, array(
+    'name' => 'Ridgeline Plumbing', 'phone' => '(512) 555-0142',
+    'notes' => 'Ask for Danny.', 'tag_ids' => array($plumberTag['id']),
+));
+ok($ace > 0, 'vendor_save creates');
+
+$vendor = vendor_get($ace);
+is_same($vendor['rating'], null, 'a vendor with no jobs has NO rating — not zero');
+is_same($vendor['jobs'], 0, 'and no jobs');
+is_same(count($vendor['tags']), 1, 'with their trade attached');
+
+/* ---- records ----------------------------------------------------------- */
+
+$r1 = record_save(null, array(
+    'title' => 'Rebuilt the shut-off valve', 'vendor_id' => $ace,
+    'performed_on' => '2026-03-04', 'cost' => '285.00', 'rating' => 5,
+));
+$r2 = record_save(null, array(
+    'title' => 'Emergency call-out', 'vendor_id' => $ace,
+    'performed_on' => '2026-05-11', 'cost' => '460', 'rating' => 3,
+));
+/* A job with no rating must not drag the average down. */
+$r3 = record_save(null, array(
+    'title' => 'Looked at the boiler', 'vendor_id' => $ace, 'performed_on' => '2026-06-01',
+));
+
+$vendor = vendor_get($ace);
+is_same($vendor['jobs'], 3, 'every job counts toward the job count');
+is_same($vendor['rated_jobs'], 2, 'but only rated ones count as rated');
+is_same($vendor['average'], 4.0,
+    'the average is over RATED jobs only — an unrated job is not a zero');
+is_same($vendor['rating'], 4.0, 'and with no override, that is what shows');
+
+/* The override is shown BESIDE the average, never instead of it. */
+vendor_save($ace, array('name' => 'Ridgeline Plumbing', 'rating_override' => 2));
+$vendor = vendor_get($ace);
+is_same($vendor['rating'], 2.0, 'an override wins for display');
+is_same($vendor['average'], 4.0, 'and the average is still available to print beside it');
+
+vendor_save($ace, array('name' => 'Ridgeline Plumbing', 'rating_override' => ''));
+is_same(vendor_get($ace)['rating_override'], null, 'clearing the override goes back to the average');
+is_same(vendor_get($ace)['rating'], 4.0, 'which is what shows again');
+
+is_same(vendor_clean_rating(0), null, 'a zero override is NULL — zero is not a legal rating');
+is_same(vendor_clean_rating(7), null, 'and out of range is NULL, never clamped');
+
+/* ---- the snapshot name ------------------------------------------------- */
+
+is_same(record_get($r1)['vendor_name'], 'Ridgeline Plumbing', 'the vendor name is snapshotted onto the record');
+
+$jobs = $vendor['jobs'];
+ok(vendor_delete($ace), 'a vendor can be deleted');
+
+$after = record_get($r1);
+is_same($after['vendor_id'], null, 'which nulls the link on their records');
+is_same($after['vendor_name'], 'Ridgeline Plumbing',
+    'BUT THE RECORD STILL SAYS WHO DID THE WORK — the snapshot survives the vendor');
+is_same((int) q('SELECT COUNT(*) FROM service_records WHERE id IN (?, ?, ?)',
+    array($r1, $r2, $r3))->fetchColumn(), 3, 'and none of the history is deleted');
+
+/* A name typed for somebody not in the directory is kept as-is. */
+$diy = record_save(null, array(
+    'title' => 'Re-hung the sunroom door', 'vendor_name' => 'Me', 'performed_on' => '2026-02-02',
+));
+is_same(record_get($diy)['vendor_name'], 'Me', 'a typed name is kept when there is no vendor row');
+is_same(record_get($diy)['vendor_id'], null, 'with no link');
+
+/* ---- cost: NULL is not zero -------------------------------------------- */
+
+is_same(record_clean_cost(''), null, 'an empty cost is NULL — "not recorded"');
+is_same(record_clean_cost(null), null, 'and so is a missing one');
+is_same(record_clean_cost('0'), '0.00', 'but a typed zero is a real zero — a different fact');
+is_same(record_clean_cost('$1,285.50'), '1285.50', 'currency symbols and separators are stripped');
+is_same(record_clean_cost('   '), null, 'whitespace is NULL');
+is_same(record_clean_cost('not a number'), null, 'and junk is NULL rather than 0');
+is_same(record_clean_cost('-40'), '0.00', 'a negative cost floors at zero');
+
+is_same(render_cost(null), '', 'a NULL cost renders as NOTHING');
+is_same(render_cost('0.00'), '$0.00', 'while a real zero renders as $0.00');
+
+/* ---- the history list -------------------------------------------------- */
+
+$all = records_list();
+ok(count($all) >= 4, 'records_list returns the history');
+is_same($all[0]['performed_on'] >= $all[1]['performed_on'], true, 'newest work first');
+ok(array_key_exists('media', $all[0]) && array_key_exists('tags', $all[0]),
+    'decorated with tags and media in batch');
+
+is_same(count(records_list(array('year' => 2026))), count($all), 'the year filter matches');
+is_same(count(records_list(array('year' => 1999))), 0, 'and excludes other years');
+is_same(count(records_list(array('search' => 'shut-off'))), 1, 'search covers the title');
+is_same(count(records_list(array('search' => 'Ridgeline'))), 3,
+    'and the snapshotted vendor name, so a deleted vendors work is still findable by their name');
+
+ok(in_array(2026, records_years(), true), 'records_years lists the years that have work in them');
+
+/* ---- linking an issue -------------------------------------------------- */
+
+$issueId = issue_create(array('title' => 'Leaky valve', 'noticed_on' => '2026-02-01'));
+$fix = record_save(null, array(
+    'title' => 'Replaced it', 'performed_on' => '2026-03-01', 'issue_id' => $issueId,
+));
+is_same(record_get($fix)['issue_id'], $issueId, 'a record can reference an issue');
+is_same(issue_get($issueId)['resolved_by_record_id'], null,
+    'but referencing it does NOT resolve it — those are different claims');
+
+issue_set_status($issueId, ISSUE_RESOLVED, $fix);
+is_same(issue_get($issueId)['resolved_by_record_id'], $fix, 'resolving with the record is explicit');
+
+/* Deleting the record must not delete the issue it closed. */
+record_delete($fix);
+ok(issue_get($issueId) !== null, 'deleting the record leaves the issue standing');
+is_same(issue_get($issueId)['resolved_by_record_id'], null, 'with the link nulled');
 
 /* =================================================================== done */
 

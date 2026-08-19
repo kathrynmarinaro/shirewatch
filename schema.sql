@@ -219,8 +219,18 @@ CREATE TABLE IF NOT EXISTS issues (
   --
   -- SEPARATE FROM service_records.issue_id, which says "this work relates to
   -- this issue". Three visits can reference one issue while only one of them
-  -- resolved it. SET NULL rather than CASCADE — deleting the record must not
-  -- delete the issue it happened to close.
+  -- resolved it.
+  --
+  -- THIS ONE HAS NO FOREIGN KEY, AND THAT IS NOT AN OVERSIGHT. It would have
+  -- to point forward at service_records, which is created further down this
+  -- file, so the constraint could only be added by a trailing ALTER TABLE —
+  -- and SQLite cannot add a foreign key by ALTER at all, so the test harness
+  -- would be exercising a different schema from production. A rule enforced
+  -- in MySQL and absent in the tests is worse than one enforced in PHP and
+  -- tested, because only the second kind fails loudly when it breaks.
+  --
+  -- So record_delete() in lib/records.php clears this column, and a test
+  -- covers it. Nothing else may delete a service_records row.
   resolved_by_record_id INT UNSIGNED NULL,
 
   created_at            DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
