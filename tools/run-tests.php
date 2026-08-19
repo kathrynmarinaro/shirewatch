@@ -376,6 +376,90 @@ is_same(auth_attempt_delay(2), 0.25, 'still flat below the escalation threshold'
 ok(auth_attempt_delay(6) > auth_attempt_delay(4), 'the delay escalates');
 is_same(auth_attempt_delay(50), 4.0, 'and is capped, so a request cannot hang');
 
+/* ============================================================== M1 · tags */
+
+section('M1 — Rooms & Tags');
+
+/* The endpoints are thin wrappers over lib/tags.php, which the section above
+ * already exercises. What is worth testing HERE is the wrapping: that each one
+ * refuses what it should, and that the screen's no-JS path and the JS path
+ * cannot diverge because both go through the same functions. */
+
+foreach (array(
+    'public/tags.php',
+    'public/assets/tags.js',
+    'public/assets/tagfield.js',
+    'public/api/tag-add.php',
+    'public/api/tag-rename.php',
+    'public/api/tag-delete.php',
+    'public/api/tag-reorder.php',
+    'public/api/tag-usage.php',
+) as $file) {
+    ok(is_file($appRoot . '/' . $file), "M1 ships $file");
+}
+
+/* Every mutating endpoint must gate on all three of login, same-origin and
+ * method. A missing require_same_origin() is invisible until somebody proves
+ * it by posting a form from another site. */
+foreach (glob($appRoot . '/public/api/tag-*.php') as $endpoint) {
+    $src  = (string) file_get_contents($endpoint);
+    $name = basename($endpoint);
+    $isRead = str_contains($src, "require_method('GET')");
+
+    ok(str_contains($src, 'require_login_api()'), "$name gates on login");
+    ok(str_contains($src, 'require_method('), "$name pins its HTTP verb");
+    ok(
+        $isRead || str_contains($src, 'require_same_origin()'),
+        "$name checks same-origin (or is a GET)"
+    );
+}
+
+/* The no-JS path posts a real form, which cannot send a header — so it needs a
+ * token, and every form on the screen needs to carry one. */
+$tagsScreen = (string) file_get_contents($appRoot . '/public/tags.php');
+is_same(
+    substr_count($tagsScreen, 'csrf_field()'),
+    substr_count($tagsScreen, '<form method="post"'),
+    'every form on the Rooms & Tags screen carries a CSRF token'
+);
+ok(str_contains($tagsScreen, 'require_csrf_form()'),
+    'and the screen checks it on POST');
+
+/* csrf_token() needs a session; the gate fails open, so the screen cannot
+ * assume the gate started one. */
+ok(str_contains($tagsScreen, 'auth_start_session()'),
+    'the screen starts its own session rather than assuming the gate did');
+
+/* The token check itself. */
+$_SESSION = array();
+$token = csrf_token();
+ok($token !== '' && strlen($token) === 64, 'csrf_token() mints a 32-byte token');
+is_same(csrf_token(), $token, 'and is stable within a session');
+ok(str_contains(csrf_field(), $token), 'csrf_field() embeds it');
+
+/* Rename refuses a collision rather than merging — the endpoint returns 409
+ * and lib/tags.php returns false. Proven here on the library, since the
+ * endpoint is a direct pass-through. */
+$library = tag_find(TAG_LOCATION, 'Library');
+$sunroom = tag_find(TAG_LOCATION, 'Sunroom');
+ok(!tag_rename($library['id'], 'Sunroom'),
+    'renaming a room onto another rooms name is refused, never merged');
+is_same(tag_by_id($library['id'])['name'], 'Library', 'and the original name is untouched');
+
+/* Cross-kind names do NOT collide: "HVAC" is legitimately both a system and a
+ * trade, and the seed data relies on it. */
+ok(tag_find(TAG_CATEGORY, 'HVAC') !== null && tag_find(TAG_WORK_TYPE, 'HVAC') !== null,
+    'the same name under two kinds coexists — HVAC is both a system and a trade');
+
+/* The picker is a closed list over seeded tags, so tagfield.js must not carry
+ * the Gallery's normalizer. A client-side lowercase would disagree with
+ * "stored exactly as typed" and quietly re-case "Ext Studio". */
+$picker = (string) file_get_contents($appRoot . '/public/assets/tagfield.js');
+ok(!str_contains($picker, 'toLowerCase'),
+    'tagfield.js does NOT normalize names — they are stored exactly as typed');
+ok(str_contains($picker, 'textContent'),
+    'tagfield.js writes tag names with textContent, never innerHTML');
+
 /* =================================================================== done */
 
 printf("\n");

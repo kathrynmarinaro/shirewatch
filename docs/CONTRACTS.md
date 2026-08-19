@@ -43,7 +43,7 @@ need to write a line of CSS, a date calculation, or a query against `tags` or
 | Owner | Files |
 |---|---|
 | **Foundation** (done) | `schema.sql`, `config.example.php`, `.htaccess` ×4, `.gitignore`, `lib/bootstrap.php`, `lib/db.php`, `lib/auth.php`, `lib/dates.php`, `lib/layout.php`, `lib/tags.php`, `lib/media.php`, `lib/imageproc.php`, `lib/mailer.php`, `lib/vendor/`, `public/login.php`, `public/logout.php`, `public/assets/styles.css`, `public/assets/{api,swipe,inline-edit,reorder,menu,tagfield}.js`, `data/starter-tasks.php`, `tools/{test-harness,run-tests,make-hash,build-deploy,seed,install-starter-tasks,hosting-check,send-test-email}.php`, `docs/CONTRACTS.md`, `CLAUDE.md` |
-| **M1 · Tags** | `public/tags.php`, `public/api/tag-*.php`, `public/assets/tags.js` |
+| **M1 · Tags** *(done)* | `public/tags.php`, `public/api/tag-*.php`, `public/assets/tags.js`, `public/assets/tagfield.js` |
 | **M2 · Media** | `public/api/upload.php`, `public/api/worker.php`, `public/api/media-*.php`, `cron/process-queue.php`, `public/assets/upload.js`, `public/assets/lightbox.js` |
 | **M3 · Issues** | `public/issues.php`, `public/issue.php`, `lib/issues.php`, `public/api/issue-*.php`, `public/assets/issues.js` |
 | **M4 · Maintenance** | `public/maintenance.php`, `public/task.php`, `lib/tasks.php`, `public/api/task-*.php`, `public/assets/maintenance.js` |
@@ -125,7 +125,8 @@ layer and the recurrence engine, which everything else stands on.
 | `db()` / `q($sql, $params)` | `db.php` | PDO handle / bound query |
 | `require_login_page()` | `auth.php` | **the gate for every HTML screen.** Redirects to `login.php?next=…`, emits `noindex()` itself |
 | `require_login_api()` | `auth.php` | the gate for every JSON endpoint; 401 `unauthorized` |
-| `require_same_origin()` | `auth.php` | CSRF check on every mutating endpoint |
+| `require_same_origin()` | `auth.php` | CSRF check on every mutating **JSON** endpoint |
+| `csrf_field()` / `require_csrf_form()` | `auth.php` | CSRF for an ordinary `<form>` post — see below |
 | `page_head()` / `screen_head()` / `page_foot()` / `page_menu()` | `layout.php` | page chrome, tab bar, hamburger |
 | `nav_tabs()` / `menu_items()` | `layout.php` | the four tabs; the sheet's contents |
 | `harness_pdo()` | `tools/test-harness.php` | in-memory SQLite from `schema.sql`. **CLI/tests only** |
@@ -153,6 +154,24 @@ require_method('POST');
 
 Mutating `fetch()` calls **must** send `X-Requested-With: Shirewatch` or
 `require_same_origin()` 403s them. `assets/api.js` does this for you.
+
+**A `<form>` post cannot set a header, so it needs a token instead.** Any
+screen that posts to itself (for a no-JS path, or because a form is simply the
+right control) must:
+
+```php
+require_csrf_form();          // at the top, before acting on $_POST
+…
+<form method="post"><?= csrf_field() ?> …</form>
+```
+
+`require_csrf_form()` is a no-op on GET and fails open when the gate is
+unconfigured, matching `require_login_page()`. `csrf_token()` needs a session,
+and **the gate does not start one when it fails open** — so call
+`auth_start_session()` yourself on a screen that touches `$_SESSION`.
+
+`auth_start_session()` is a no-op on CLI. `$_SESSION` stays a plain array there,
+so session-touching code is testable and a cron run emits no warnings.
 
 ---
 
@@ -337,6 +356,35 @@ tables.**
 
 `$type` is `'issue'`, `'task'`, `'record'` or `'vendor'`. `$kind` is
 `TAG_LOCATION`, `TAG_CATEGORY` or `TAG_WORK_TYPE`.
+
+### The picker — `assets/tagfield.js`
+
+**Render a real `<select multiple>` and let the module drive it.** The select
+is the form control; the chips are a rendering of its options. So the form
+posts correctly with JS off, and there is no parallel state to keep in sync.
+
+```html
+<div class="tagfield" id="issue-tags">
+  <select multiple name="tags[]" class="sr-only">
+    <option value="3" data-kind="location" selected>Kitchen</option>
+    <option value="9" data-kind="category">Plumbing</option>
+  </select>
+</div>
+```
+
+```js
+const field = attachTagField('#issue-tags', { onChange: (ids) => {} });
+field.value();      // [3]
+field.set([3, 9]);
+field.detach();
+```
+
+`data-kind` on each option is what groups the sheet. The picker **stays open**
+across taps — picking three rooms is the normal case.
+
+**New tags are not created from the picker.** That is the Rooms & Tags screen's
+job, deliberately: a tag created in passing while filling in a form is how you
+end up with both `Kitchen ` and `kitchen`.
 
 `tags_set()` **silently drops ids that don't exist** rather than rejecting the
 save. A picker showing a tag someone deleted in another tab should cost you that

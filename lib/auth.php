@@ -45,6 +45,26 @@ function auth_start_session(): void
         return;
     }
 
+    /* THERE IS NO SESSION ON THE COMMAND LINE, and trying to start one there
+     * is not merely useless — it emits four warnings into the output of every
+     * cron run and every test run, because there are no headers to set a
+     * cookie in.
+     *
+     * $_SESSION stays a plain array, so anything that reads or writes it
+     * (csrf_token(), most usefully) still works and is testable. Nothing
+     * persists between CLI invocations, which is correct: a cron job has no
+     * identity to remember.
+     *
+     * The siblings all lack this guard and none of them noticed, because none
+     * of them touches $_SESSION from a tool. Worth backporting the day one
+     * does. */
+    if (PHP_SAPI === 'cli') {
+        if (!isset($_SESSION)) {
+            $_SESSION = array();
+        }
+        return;
+    }
+
     $days    = (int) cfg('session_days', 90);
     $seconds = $days * 86400;
     $https   = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
@@ -324,6 +344,66 @@ function noindex(): void
  * assets/api.js sends this on every non-GET automatically. A hand-rolled
  * fetch() that forgets it gets a 403 with code 'csrf_check_failed'. */
 const CSRF_HEADER_VALUE = 'Shirewatch';
+
+/* ---------------------------------------------------------- CSRF for FORMS
+ *
+ * The header check below covers fetch(). It CANNOT cover an ordinary <form>
+ * post, because a form cannot set a request header — which means any screen
+ * built to work with JavaScript off needs a real token instead.
+ *
+ * That is not a hypothetical: public/tags.php is the screen you would reach
+ * for to fix a typo in a room name, and a broken script must not be what stops
+ * you. Later modules that render a plain form need the same thing.
+ *
+ * The token is per-session, not per-form. Rotating per form would invalidate
+ * the other tab, and on a single-user app the extra strength buys nothing
+ * against a threat model where an attacker who can read the token has already
+ * read the session cookie.
+ */
+
+/** The session's CSRF token, minted on first use. */
+function csrf_token(): string
+{
+    auth_start_session();
+    if (empty($_SESSION['csrf'])) {
+        $_SESSION['csrf'] = bin2hex(random_bytes(32));
+    }
+    return (string) $_SESSION['csrf'];
+}
+
+/** A ready-made hidden input. `<?= csrf_field() ?>` inside every form. */
+function csrf_field(): string
+{
+    return '<input type="hidden" name="_csrf" value="' . h(csrf_token()) . '">';
+}
+
+/**
+ * Check the token on a form POST. Renders a plain refusal and stops.
+ *
+ * hash_equals(), not === : string comparison short-circuits on the first
+ * differing byte, which leaks the token one character at a time to anybody
+ * patient enough to time the responses.
+ *
+ * Fails OPEN when the gate is unconfigured, matching require_login_page(). An
+ * app with no password has no session to forge a request against, and refusing
+ * here would make an unconfigured deploy unusable rather than merely open.
+ */
+function require_csrf_form(): void
+{
+    if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
+        return;
+    }
+    if (!auth_is_configured()) {
+        return;
+    }
+
+    $sent = (string) ($_POST['_csrf'] ?? '');
+    if ($sent === '' || !hash_equals(csrf_token(), $sent)) {
+        http_response_code(403);
+        header('Content-Type: text/plain; charset=utf-8');
+        exit("This form expired. Go back, reload the page and try again.\n");
+    }
+}
 
 function require_same_origin(): void
 {
