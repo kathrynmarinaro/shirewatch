@@ -69,7 +69,7 @@ if ($problem !== null) {
 /* A real message through the real path, so what is proved is the thing that
  * runs at six in the morning — not a simplified version of it that shares no
  * code with it. */
-$stamp = crm_today() . ' ' . date('H:i:s');
+$stamp = sw_today() . ' ' . date('H:i:s');
 
 printf("Sending a test message to %s ...\n", (string) cfg('smtp.to', ''));
 

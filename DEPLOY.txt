@@ -1,0 +1,206 @@
+SHIREWATCH — DEPLOY CHECKLIST
+=============================
+
+House maintenance: issues watched over time, scheduled maintenance with
+email reminders, service history, vendors. PHP + MySQL, no build step.
+
+Rebuild this bundle any time with:  php tools/build-deploy.php
+
+Written by the Foundation pass. Later passes should EXTEND it rather than
+replace it — every step below is one somebody has to do in a browser, in
+order, and the order is the useful part.
+
+
+WHERE THE FILES GO
+------------------
+
+Upload the CONTENTS of this bundle into the folder your (sub)domain points
+at. On Hostinger a subdomain is usually a folder under public_html, so for
+house.example.com that is:
+
+    public_html/house/
+        .htaccess             <- the shim; see below. MUST be here
+        config.php            <- you create this in step 2
+        schema.sql
+        lib/
+        tools/
+        cron/
+        data/
+        public/               <- the app's public files
+
+>> THE FOLDER MUST BE CALLED public — NOT public_html.
+
+   The .htaccess at the top level is a document-root shim: Hostinger points
+   the subdomain at the whole app folder and won't let you move the document
+   root down, so that file rewrites every request into public/ BY NAME and
+   denies everything that must never be served.
+
+   Rename public/ and the site is a 404 with nothing in any log to explain
+   it — Apache rewrites into a directory that isn't there, so PHP never runs
+   and never gets a chance to complain. If you see a bare 404 on a fresh
+   upload, check this first.
+
+BETTER, IF THE HOST EVER ALLOWS IT: point the document root directly at
+.../house/public. The private folders are then genuinely outside the served
+tree instead of being denied inside it, and the top-level .htaccess becomes
+unnecessary.
+
+>> TURN ON "SHOW HIDDEN FILES" in the file manager BEFORE AND AFTER
+   uploading. There are FIVE .htaccess files in here:
+
+       ./.htaccess    lib/.htaccess    tools/.htaccess    data/.htaccess
+       public/uploads/.htaccess
+
+   File managers hide dotfiles by default, so it is very easy to upload
+   without them, see the site working perfectly, and never notice that your
+   config is downloadable. After uploading, check all five arrived.
+
+   public/uploads/.htaccess is the one that matters most. That directory is
+   inside the web root AND the app writes uploaded bytes into it. The
+   .htaccess is what stops anything in there ever being EXECUTED.
+
+
+1. RUN THE HOSTING CHECK FIRST
+   Upload tools/hosting-check.php, fetch it once in a browser, read the
+   output, then DELETE IT FROM THE SERVER.
+
+   Three of its answers change what you do next:
+     · no Imagick        -> iPhone HEIC photos will be rejected. Set the
+                            camera to "Most Compatible" or expect to convert.
+     · SMTP blocked      -> no reminder emails are possible on this plan.
+     · no command cron   -> use the URL cron in step 7.
+
+
+2. DATABASE
+   hPanel -> Databases -> create a database and a user. Note the name, user
+   and password.
+
+   On Hostinger BOTH the database name and the username are prefixed with
+   your account id (u123456_shirewatch), not the bare name in
+   config.example.php. This is the first thing that goes wrong.
+
+
+3. CONFIG
+   Copy config.example.php to config.php and fill in:
+     · the db block from step 2
+     · timezone      — READ THE COMMENT. This app is made of dates.
+     · password_hash — generate it with:  php tools/make-hash.php
+     · app_url       — the absolute URL of the app root, no trailing slash.
+                       Only the cron needs it, and without it the link in
+                       every reminder email is a bare "index.php".
+     · the smtp block — see step 6.
+
+   config.php is gitignored and must never be committed.
+
+
+4. LOAD THE SCHEMA
+   hPanel -> phpMyAdmin -> your database -> Import -> schema.sql
+
+   This seeds one property, your 24 rooms, 12 systems and 12 work types.
+   All of them are editable and deletable from Rooms & Tags in the menu.
+
+
+5. RAISE THE PHP UPLOAD LIMITS — DON'T SKIP THIS
+   PHP ships with upload_max_filesize = 2M, and a single iPhone photo is
+   bigger than that, so with the defaults EVERY real upload is rejected
+   before the app ever sees it.
+
+   hPanel -> Advanced -> PHP Configuration -> PHP Options:
+
+       upload_max_filesize   25M
+       post_max_size        128M     <- a whole batch at once, not one file
+       max_file_uploads      40
+       memory_limit         256M
+
+   Then make public/uploads/ and its four sub-directories writable — 755 is
+   normally enough on Hostinger.
+
+
+6. EMAIL — VERIFY IT BEFORE TRUSTING IT
+   >> from_email MUST EQUAL user in the smtp block. <<
+
+   Gmail rewrites or rejects a From address it has not authorized, and the
+   bounce is SILENT: the send "succeeds", the ledger records a delivery, and
+   the mail never arrives. Nothing on any screen would ever say so.
+
+   'pass' is a Gmail APP PASSWORD, not the account password. Regular
+   passwords have not worked for SMTP since 2022.
+
+   Then, before you trust a cron you cannot watch run:
+
+       php tools/send-test-email.php
+
+   It sends one real message over the real connection and says out loud what
+   happened. Run it again after ever touching the smtp block.
+
+
+7. CRON — TWO JOBS
+   hPanel -> Advanced -> Cron Jobs.
+
+   a) REMINDERS, once a day, early:
+        /usr/bin/php /home/uXXXX/domains/.../house/tools/cron-reminders.php
+
+   b) PHOTO QUEUE, every few minutes:
+        /usr/bin/php /home/uXXXX/domains/.../house/cron/process-queue.php
+
+   Photos normally process while you are still in the app; (b) is the safety
+   net for a closed tab or a phone that slept mid-upload.
+
+   IF YOUR PLAN ONLY OFFERS A URL FETCH: tools/ is denied over HTTP, so use
+   the wrapper instead. Generate a token:
+
+        php -r 'echo bin2hex(random_bytes(32)), PHP_EOL;'
+
+   paste it into config.php as cron_token, and fetch:
+
+        https://YOUR-DOMAIN/cron.php?token=THE_TOKEN
+
+   Leave cron_token EMPTY if you have a command cron. cron.php refuses to
+   run with an empty token rather than running unauthenticated.
+
+
+8. STARTER MAINTENANCE LIST
+   Optional, and only worth running once:
+
+       php tools/install-starter-tasks.php --dry-run     (see what it'd add)
+       php tools/install-starter-tasks.php
+
+   19 generic tasks — HVAC filters, gutters, water heater, detector
+   batteries, appliance care — with their first due dates computed forward
+   from today, so nothing is overdue on day one.
+
+   Delete what doesn't apply. Re-running it never resurrects a task you
+   deleted and never overwrites your edits.
+
+
+9. USE HTTPS
+   Enable free SSL in hPanel. Your password is sent in a form post, and the
+   session cookie only gets its Secure flag over HTTPS.
+
+
+10. ADD TO HOME SCREEN
+    Per your usual setup.
+
+
+NEVER UPLOAD
+------------
+tools/run-tests.php, tools/test-harness.php, tools/build-deploy.php and
+tools/seed.php are excluded from this bundle automatically. seed.php writes
+directly to the database; the correct number of ways to reach it from a
+browser is zero.
+
+If you ran tools/hosting-check.php over the web in step 1, DELETE IT NOW.
+It reports PHP limits and extension versions, which is reconnaissance you
+have no reason to publish.
+
+
+BACKUPS
+-------
+Menu -> Export data downloads everything. Do it periodically.
+
+>> YOUR PHOTOS ARE NOT A CACHE. <<
+
+The full-resolution originals under public/uploads/original/ are kept
+deliberately and are never regenerated from anything — they ARE the record
+of what the house looked like on the day you photographed it. Back that
+directory up separately from the database. Losing it is not recoverable.
