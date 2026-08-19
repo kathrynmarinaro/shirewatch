@@ -62,6 +62,13 @@ if ($publicDirName === '') {
 }
 define('PUBLIC_DIR', APP_ROOT . '/' . $publicDirName);
 
+/* Where uploaded photos and documents live, in four sub-directories:
+ * original/, thumb/, detail/ and docs/. Inside the web root because the
+ * browser has to be able to fetch them; public/uploads/.htaccess is what stops
+ * anything in there ever being EXECUTED, which is the actual risk with a
+ * directory the public can write into. */
+define('UPLOAD_DIR', PUBLIC_DIR . '/uploads');
+
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/auth.php';
 

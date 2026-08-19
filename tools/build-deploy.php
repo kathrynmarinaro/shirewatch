@@ -43,7 +43,7 @@ declare(strict_types=1);
  * upload is the one job you do BEFORE there is a config to read. */
 define('APP_ROOT', dirname(__DIR__));
 
-const BUNDLE_NAME = 'personal-crm-deploy';
+const BUNDLE_NAME = 'shirewatch-deploy';
 
 /* Copied as-is, relative to the app root. Order is only for the manifest. */
 const INCLUDE_ROOT_FILES = array(
@@ -51,16 +51,16 @@ const INCLUDE_ROOT_FILES = array(
     'config.example.php',
     'schema.sql',
     'DEPLOY.txt',
+    'README.md',
 );
 
 /* Whole directories, copied recursively, minus SKIP_FILES below.
  *
- * uploads/ is here for ONE FILE: its deny-all .htaccess. The directory has to
- * exist on the server before the first import, and it has to be denied before
- * it exists — creating it by hand later means creating it without the
- * .htaccess, which is how a folder full of .vcf files ends up on the web.
- * Nothing else in it is ever tracked (see .gitignore). */
-const INCLUDE_DIRS = array('lib', 'tools', 'uploads');
+ * uploads/ is NOT here, unlike the sibling app this is ported from: in
+ * Shirewatch it lives under public/ (the browser has to be able to fetch a
+ * photo), so it is copied as part of public/ below. Its .htaccess is on the
+ * required list all the same. */
+const INCLUDE_DIRS = array('lib', 'tools', 'cron');
 
 /* Never leaves this machine.
  *
@@ -80,16 +80,17 @@ const SKIP_PREFIXES = array('tests-');
 /* Must all be present in the finished bundle or the build fails. Hiding
  * dotfiles is the file manager default, so a missing one is invisible until
  * someone fetches /config.php over HTTP and gets it. */
-/* uploads/.htaccess earns its place on this list more than any of the others:
- * an uploaded .vcf is names, phone numbers and home addresses for everyone in
- * somebody's phone. The file is supposed to be deleted the instant it is
- * parsed, so this only matters on the run where the parser threw — which is
- * exactly the run nobody is watching. */
+/* public/uploads/.htaccess earns its place here more than any of the others.
+ * That directory is inside the web root AND the app writes attacker-supplied
+ * bytes into it — which is the one combination that matters. The .htaccess is
+ * what stops anything in there ever being EXECUTED; without it, a file that
+ * survives the byte-sniffing in lib/imageproc.php is a file the server will
+ * happily run. It has to be there BEFORE the first upload, not after. */
 const REQUIRED_HTACCESS = array(
     '.htaccess',
     'lib/.htaccess',
     'tools/.htaccess',
-    'uploads/.htaccess',
+    'public/uploads/.htaccess',
 );
 
 function main(): void
@@ -128,7 +129,7 @@ function main(): void
      * Keeping the name is right for BOTH layouts. When the (sub)domain points at
      * the app folder, as it does on this account, the shim finds public/ where
      * it expects it. When a host lets you point the document root straight at
-     * .../personal-cms/public, the shim sits above the served tree and never
+     * .../shirewatch/public, the shim sits above the served tree and never
      * runs, so the name is irrelevant. Renaming only ever helped the layout this
      * app doesn't use. */
     $copied = array_merge($copied, copy_tree($root . '/public', $out . '/public', 'public'));
@@ -176,12 +177,15 @@ function main(): void
         }
     }
 
-    /* A .vcf in the bundle means somebody's address book is about to be zipped
-     * and emailed around. uploads/ is copied for its .htaccess alone; anything
-     * else in it is a file that should already have been deleted. */
-    foreach (glob($out . '/uploads/*') ?: array() as $stray) {
-        if (basename($stray) !== '.htaccess') {
-            fail('an uploaded contacts file reached the bundle: uploads/' . basename($stray));
+    /* Photos in the bundle mean the deploy zip is about to carry the contents
+     * of the house around, and an FTP upload of it would overwrite the live
+     * ones. The four sub-directories are copied for their structure and their
+     * .gitkeep, never for their contents. */
+    foreach (array('original', 'thumb', 'detail', 'docs') as $sub) {
+        foreach (glob($out . '/public/uploads/' . $sub . '/*') ?: array() as $stray) {
+            if (!in_array(basename($stray), array('.gitkeep', '.htaccess'), true)) {
+                fail('an uploaded file reached the bundle: uploads/' . $sub . '/' . basename($stray));
+            }
         }
     }
 

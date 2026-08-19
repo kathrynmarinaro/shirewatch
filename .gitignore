@@ -16,27 +16,22 @@ config.php
 # tools/build-deploy.php whenever it's needed. Committing them would mean a
 # second copy of the whole app that silently goes stale.
 *.zip
-personal-crm-deploy/
+shirewatch-deploy/
 
 .DS_Store
 *.log
 
-# --- uploaded contact files --------------------------------------------
-# Uploaded .vcf files land in uploads/ and are deleted the moment they are
-# parsed, so nothing here should ever survive long enough to be committed.
-# This is the backstop for the run where the parser threw before it got there:
-# a contacts export is names, phone numbers and home addresses for everyone in
-# somebody's phone, and it is the single worst thing this repo could grow.
+# --- uploaded photos and documents -------------------------------------
+# Everything the app stores lands under public/uploads/. These are the ONLY
+# copies of your photos — the originals are kept rather than reaped
+# (CLAUDE.md), so this directory IS your data, not a cache. It does not belong
+# in git: a repo is not a backup, and pushing the inside of your house to a
+# remote is not something you should be able to do by accident.
 #
-# The directory itself and its deny-all .htaccess ARE tracked — the .htaccess
-# is what keeps the folder off the web, and an untracked one is an .htaccess
-# that exists on exactly one machine.
-uploads/*
-!uploads/.htaccess
-
-# NOTE: tests/fixtures/*.vcf is deliberately NOT ignored. Those are synthetic
-# cards written by hand to exercise the parser (folded lines, quoted-printable,
-# a large PHOTO, BDAY:--0415), they contain no real person's data, and the
-# vCard tests are meaningless without them. Same reasoning as Grocery's tracked
-# data/grocery-dictionary.csv: a fixture that lives on one laptop is a test
-# nobody else can run.
+# The four sub-directories and their .gitkeep files ARE tracked, so a fresh
+# checkout has somewhere to write, and so is the deny-all .htaccess — an
+# untracked .htaccess is one that exists on exactly one machine, and that file
+# is the only thing stopping an uploaded file from being executed.
+public/uploads/*/*
+!public/uploads/*/.gitkeep
+!public/uploads/.htaccess

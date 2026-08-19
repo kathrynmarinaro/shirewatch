@@ -1,0 +1,16 @@
+# Deny-all. This directory is read by PHP from disk; HTTP must never reach it.
+#
+# The dictionary CSV is not secret, but nothing in here is meant to be a URL,
+# and a wide-open data/ is how a future file that IS sensitive gets served by
+# accident. Deny the folder, not the file.
+#
+# NOT redundant with any rewrite in the root .htaccess: that kind of rule lives
+# inside <IfModule mod_rewrite.c> and silently does nothing when the module is
+# unavailable. This file needs no modules.
+<IfModule mod_authz_core.c>
+  Require all denied
+</IfModule>
+<IfModule !mod_authz_core.c>
+  Order allow,deny
+  Deny from all
+</IfModule>

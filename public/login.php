@@ -65,12 +65,12 @@ if ($next === '' || str_contains($next, '://') || str_starts_with($next, '//')) 
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#41b7ab">
-<title>Personal CRM</title>
+<title><?= h(app_name()) ?></title>
 <link rel="stylesheet" href="<?= asset('assets/styles.css') ?>">
 </head>
 <body class="login-body">
   <main class="login-card">
-    <h1 class="login-title">Personal CRM</h1>
+    <h1 class="login-title"><?= h(app_name()) ?></h1>
 
     <form method="post" action="login.php" class="login-form" autocomplete="on">
       <input type="hidden" name="next" value="<?= h($next) ?>">

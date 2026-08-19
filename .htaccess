@@ -1,5 +1,5 @@
 # =====================================================================
-# Personal CRM — document-root shim
+# Shirewatch — document-root shim
 # ---------------------------------------------------------------------
 # Hostinger points the (sub)domain at THIS folder and won't let us move
 # the document root down into public/. So the whole app tree is inside

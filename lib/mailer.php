@@ -5,7 +5,13 @@
  * ONE FUNCTION IS THE CONTRACT (PLAN.md §7.1).
  * ---------------------------------------------------------------------------
  *
- *   send_reminder_email(array $person, string $type, string $dueDate): bool
+ *   send_task_reminder(array $tasks, string $today): bool
+ *
+ * ONE EMAIL PER RUN, CARRYING EVERY DUE TASK — not one email per task. Five
+ * separate messages on a Saturday morning is five notifications you swipe away
+ * without reading; one list is a thing you act on. The send LEDGER is still
+ * per-task (schema.sql, task_reminder_sends), so a task that has already been
+ * emailed about is simply absent from the next digest.
  *
  * Everything else in this file exists to build that message or to explain why
  * it did not go. Nothing outside this file knows that PHPMailer exists, which
@@ -54,7 +60,7 @@
 
 declare(strict_types=1);
 
-require_once __DIR__ . '/contact.php';
+require_once __DIR__ . '/dates.php';
 
 /* Order matters and there is no autoloader: PHPMailer.php and SMTP.php both
  * refer to Exception, and SMTP.php is instantiated from inside PHPMailer.php. */
@@ -62,10 +68,10 @@ require_once __DIR__ . '/vendor/PHPMailer/Exception.php';
 require_once __DIR__ . '/vendor/PHPMailer/PHPMailer.php';
 require_once __DIR__ . '/vendor/PHPMailer/SMTP.php';
 
-/* How many gift ideas go in a birthday email. The email is a nudge, not the
- * screen — if there are fifteen ideas, five of them plus "and 10 more" is what
- * fits on a lock-screen preview and still gets you to open the profile. */
-const MAILER_GIFT_LIMIT = 5;
+/* How many tasks are named in the body before it summarises. The email is a
+ * nudge, not the screen: past this many, "and 6 more" plus a link is what fits
+ * on a lock-screen preview and still gets you to open the dashboard. */
+const MAILER_TASK_LIMIT = 8;
 
 /* Placeholders config.example.php ships with. Sending with either of these in
  * place is a guaranteed authentication failure, and catching it here turns a
@@ -147,9 +153,9 @@ function mailer_config_problem(): ?string
  * DEPLOY.txt asks for (1). Adding 'app_url' to config.example.php is a
  * Foundation change and is reported rather than made here.
  */
-function mailer_profile_url(int $personId): string
+function mailer_dashboard_url(): string
 {
-    $path = 'person.php?id=' . $personId;
+    $path = 'index.php';
 
     $base = trim((string) cfg('app_url', ''));
     if ($base !== '') {
@@ -210,196 +216,13 @@ function mailer_when_phrase(string $date, string $today): string
     return 'in ' . $days . ' days';
 }
 
-/** "last contacted 62 days ago", or "never contacted" — and never "0 days". */
-function mailer_contact_phrase(?string $lastContact, string $today): string
-{
-    $days = days_since($lastContact, $today);
-    if ($days === null) {
-        return 'never contacted';
-    }
-    if ($days === 0) {
-        return 'last contacted today';
-    }
-    if ($days === 1) {
-        return 'last contacted yesterday';
-    }
-    return 'last contacted ' . $days . ' days ago';
-}
 
-/**
- * The birthday this reminder is about, as Y-m-d.
- *
- * Found from the reminder's own DUE date and not from today, for the same
- * reason reminders_advance_after_send() does it: next_birthday() answers "on or
- * after", so asking it from today would name next year's birthday on any day
- * after this year's. The due date is the lead date, which sits before the
- * birthday it was written for, whichever day the cron actually runs.
- */
-function mailer_birthday_date(array $person, string $dueDate): ?string
-{
-    $month = $person['birth_month'] ?? null;
-    $day   = $person['birth_day'] ?? null;
-    if ($month === null || $day === null) {
-        return null;
-    }
 
-    return next_birthday((int) $month, (int) $day, $dueDate);
-}
-
-/**
- * THE SUBJECT LINE, which is the whole user experience here (PLAN.md §7.3).
- *
- * This arrives on a phone lock screen and is very often the only part that is
- * ever read, so it carries the name, the thing, and when — in that order,
- * because a truncated subject must still say who it is about.
- *
- *   Birthday: Alex Chen — April 15 (next Wednesday)
- *   Time to reach out to Alex Chen — last contacted 62 days ago
- */
-function mailer_subject(array $person, string $type, string $dueDate, string $today): string
-{
-    $name = (string) ($person['name'] ?? 'Someone');
-
-    if ($type === REMINDER_BIRTHDAY) {
-        $birthday = mailer_birthday_date($person, $dueDate);
-        if ($birthday === null) {
-            /* No birthday on the person any more — the reminder is about to be
-             * reconciled away. Say something true rather than "on ". */
-            return 'Birthday: ' . $name;
-        }
-        return 'Birthday: ' . $name . ' — ' . fmt_date($birthday, 'F j')
-            . ' (' . mailer_when_phrase($birthday, $today) . ')';
-    }
-
-    return 'Time to reach out to ' . $name . ' — '
-        . mailer_contact_phrase($person['last_contact_date'] ?? null, $today);
-}
 
 /* ================================================================== bodies ==*/
 
-/**
- * The pieces of the body, assembled once and rendered twice.
- *
- * Notes, gift ideas and a link, and NOTHING ELSE (PLAN.md §7.3). The email is a
- * nudge with enough context to act on without opening anything; everything else
- * is one tap away and stays there.
- *
- * GIFT IDEAS ONLY ON A BIRTHDAY, because that is when you want them. On a
- * reach-out they are noise, and worse, they are the wrong prompt: the reminder
- * is to talk to somebody, not to buy them something.
- *
- * @return array{headline: string, notes: string, gifts: array<int, string>, more: int, url: string}
- */
-function mailer_body_parts(array $person, string $type, string $dueDate, string $today): array
-{
-    $personId = (int) ($person['id'] ?? 0);
 
-    if ($type === REMINDER_BIRTHDAY) {
-        $birthday = mailer_birthday_date($person, $dueDate);
-        $headline = $birthday === null
-            ? 'A birthday is coming up.'
-            : fmt_date($birthday, 'F j') . ' — ' . mailer_when_phrase($birthday, $today) . '.';
-    } else {
-        $headline = ucfirst(mailer_contact_phrase($person['last_contact_date'] ?? null, $today)) . '.';
-    }
 
-    $gifts = array();
-    $more  = 0;
-    if ($type === REMINDER_BIRTHDAY && $personId > 0) {
-        /* Fail soft: a broken gift-ideas read must cost the list, not the
-         * email. The birthday is the thing that has to arrive. */
-        try {
-            $all = gifts_for_person($personId);
-            foreach ($all as $gift) {
-                $gifts[] = (string) $gift['idea_text'];
-            }
-            $more  = max(0, count($gifts) - MAILER_GIFT_LIMIT);
-            $gifts = array_slice($gifts, 0, MAILER_GIFT_LIMIT);
-        } catch (Throwable $e) {
-            error_log('mailer: gift ideas unavailable for person ' . $personId . ': ' . $e->getMessage());
-        }
-    }
-
-    return array(
-        'headline' => $headline,
-        'notes'    => trim((string) ($person['notes'] ?? '')),
-        'gifts'    => $gifts,
-        'more'     => $more,
-        'url'      => mailer_profile_url($personId),
-    );
-}
-
-/** The plain-text part. The one that actually gets read on a watch. */
-function mailer_body_text(array $person, string $type, string $dueDate, string $today): string
-{
-    $parts = mailer_body_parts($person, $type, $dueDate, $today);
-    $name  = (string) ($person['name'] ?? 'Someone');
-
-    $lines = array($name, $parts['headline'], '');
-
-    if ($parts['notes'] !== '') {
-        $lines[] = 'Notes';
-        $lines[] = $parts['notes'];
-        $lines[] = '';
-    }
-
-    if ($parts['gifts'] !== array()) {
-        $lines[] = 'Gift ideas';
-        foreach ($parts['gifts'] as $gift) {
-            $lines[] = '  - ' . $gift;
-        }
-        if ($parts['more'] > 0) {
-            $lines[] = '  ... and ' . $parts['more'] . ' more';
-        }
-        $lines[] = '';
-    }
-
-    $lines[] = $parts['url'];
-
-    return implode("\n", $lines) . "\n";
-}
-
-/**
- * The HTML part: the same words, in a readable size, and nothing else.
- *
- * No layout, no images, no tracking, no web fonts. An email client is the one
- * rendering engine nobody can test against, and this only has to be legible.
- * The inline styles here are the exception the no-inline-style rule allows —
- * there is no stylesheet in an email, and styles.css is not involved.
- *
- * Everything from the database goes through h(), same as every template.
- */
-function mailer_body_html(array $person, string $type, string $dueDate, string $today): string
-{
-    $parts = mailer_body_parts($person, $type, $dueDate, $today);
-    $name  = (string) ($person['name'] ?? 'Someone');
-
-    $html = '<div style="font:16px/1.5 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;color:#222">'
-        . '<h1 style="font-size:20px;margin:0 0 4px">' . h($name) . '</h1>'
-        . '<p style="margin:0 0 16px;color:#555">' . h($parts['headline']) . '</p>';
-
-    if ($parts['notes'] !== '') {
-        $html .= '<h2 style="font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:#777;margin:16px 0 4px">Notes</h2>'
-            /* nl2br over an escaped string, never the other way round. */
-            . '<p style="margin:0">' . nl2br(h($parts['notes'])) . '</p>';
-    }
-
-    if ($parts['gifts'] !== array()) {
-        $html .= '<h2 style="font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:#777;margin:16px 0 4px">Gift ideas</h2><ul style="margin:0;padding-left:20px">';
-        foreach ($parts['gifts'] as $gift) {
-            $html .= '<li>' . h($gift) . '</li>';
-        }
-        if ($parts['more'] > 0) {
-            $html .= '<li style="color:#777">and ' . (int) $parts['more'] . ' more</li>';
-        }
-        $html .= '</ul>';
-    }
-
-    $html .= '<p style="margin:20px 0 0"><a href="' . h($parts['url']) . '">Open ' . h($name) . '</a></p>'
-        . '</div>';
-
-    return $html;
-}
 
 /* ================================================================ delivery ==*/
 
@@ -451,7 +274,7 @@ function mailer_send(string $subject, string $textBody, string $htmlBody): bool
         $mail->CharSet  = 'UTF-8';
         $mail->Encoding = PHPMailer\PHPMailer\PHPMailer::ENCODING_BASE64;
 
-        $mail->setFrom((string) cfg('smtp.from_email', ''), (string) cfg('smtp.from_name', 'Personal CRM'));
+        $mail->setFrom((string) cfg('smtp.from_email', ''), (string) cfg('smtp.from_name', app_name()));
         $mail->addAddress((string) cfg('smtp.to', ''));
 
         $mail->Subject = $subject;
@@ -473,35 +296,170 @@ function mailer_send(string $subject, string $textBody, string $htmlBody): bool
     }
 }
 
+
+/* ================================================================== body ==*/
+
 /**
- * ===================== THE FUNCTION THE CRON CALLS ==========================
+ * The subject line.
  *
- *   send_reminder_email(array $person, string $type, string $dueDate): bool
- *
- * $person is a people row as people_get() returns it — id, name, notes, the
- * three birthday columns and last_contact_date are the parts used.
- * $type is REMINDER_BIRTHDAY or REMINDER_REACH_OUT.
- * $dueDate is the reminder's next_due_date, which for a birthday is the LEAD
- * date and is what names the birthday being talked about.
- * ============================================================================
- *
- * True means the SMTP server accepted the message. It does not mean it was
- * delivered, and nothing in this app can know that — which is why
- * mailer_config_problem() refuses the one misconfiguration that produces an
- * accepted message nobody receives.
- *
- * $today is optional only so that the three-argument contract in PLAN.md §7.1
- * still holds. Pass it. The cron does, from its single sw_today().
+ * Leads with the count, because that is the part visible in a notification
+ * before anything else: "3 things due at the house" tells you whether to open
+ * it. The single-task case names the task instead, since a count of one is
+ * less informative than the thing itself.
  */
-function send_reminder_email(array $person, string $type, string $dueDate, ?string $today = null): bool
+function mailer_subject(array $tasks, string $today): string
+{
+    $count = count($tasks);
+    if ($count === 1) {
+        $task = $tasks[0];
+        return $task['title'] . ' — due ' . mailer_when_phrase((string) $task['next_due_on'], $today);
+    }
+
+    $overdue = 0;
+    foreach ($tasks as $task) {
+        if ((string) $task['next_due_on'] < $today) {
+            $overdue++;
+        }
+    }
+
+    $subject = $count . ' things due at the house';
+    if ($overdue > 0) {
+        /* The overdue count is the half that makes this urgent, and it is the
+         * half that gets truncated if it goes at the end. */
+        $subject .= ' (' . $overdue . ' overdue)';
+    }
+    return $subject;
+}
+
+/**
+ * One task as a single line: "Furnace filter — due tomorrow · Every 3 months".
+ *
+ * Shared by the text and HTML bodies so the two cannot drift into saying
+ * different things about the same task.
+ */
+function mailer_task_line(array $task, string $today): string
+{
+    $line = $task['title'] . ' — due ' . mailer_when_phrase((string) $task['next_due_on'], $today);
+
+    $every = recur_describe($task);
+    if ($every !== '') {
+        $line .= ' · ' . $every;
+    }
+    return $line;
+}
+
+/**
+ * The plain-text body.
+ *
+ * NOT AN AFTERTHOUGHT. It is what a watch, a lock-screen preview and a text-only
+ * client actually show, and it is the AltBody on every message — so it has to
+ * carry the same information as the HTML rather than saying "view this in a
+ * modern client".
+ */
+function mailer_body_text(array $tasks, string $today): string
+{
+    $lines = array();
+    $shown = array_slice($tasks, 0, MAILER_TASK_LIMIT);
+
+    foreach ($shown as $task) {
+        $lines[] = '· ' . mailer_task_line($task, $today);
+
+        /* Instructions are the reason a task is worth an email rather than a
+         * calendar entry: "the filter is 16x25x1, they are on the shelf above
+         * the dryer" is what stops the job being deferred. First line only —
+         * the rest is on the screen the link goes to. */
+        $note = trim((string) ($task['instructions'] ?? ''));
+        if ($note !== '') {
+            $first = strtok($note, "\n");
+            $lines[] = '    ' . mb_substr((string) $first, 0, 120, 'UTF-8');
+        }
+    }
+
+    $extra = count($tasks) - count($shown);
+    if ($extra > 0) {
+        $lines[] = '· and ' . $extra . ' more';
+    }
+
+    return implode("\n", $lines) . "\n\n" . mailer_dashboard_url() . "\n";
+}
+
+/**
+ * The HTML body.
+ *
+ * INLINE STYLES AND A TABLE-FREE SINGLE COLUMN, deliberately. Mail clients
+ * strip <style> blocks, ignore external stylesheets and disagree about
+ * flexbox; the house design system does not survive the trip, so this does not
+ * try to bring it. It borrows the accent colour and nothing else.
+ *
+ * Everything is escaped with h(). A task title is user-entered text going into
+ * a document rendered by someone else's client.
+ */
+function mailer_body_html(array $tasks, string $today): string
+{
+    $accent = '#41b7ab';
+    $url    = h(mailer_dashboard_url());
+    $shown  = array_slice($tasks, 0, MAILER_TASK_LIMIT);
+
+    $rows = '';
+    foreach ($shown as $task) {
+        $overdue = (string) $task['next_due_on'] < $today;
+        $rows .= '<li style="margin:0 0 14px 0;">'
+            . '<span style="font-weight:600;' . ($overdue ? 'color:#c05252;' : '') . '">'
+            . h(mailer_task_line($task, $today))
+            . '</span>';
+
+        $note = trim((string) ($task['instructions'] ?? ''));
+        if ($note !== '') {
+            $first = strtok($note, "\n");
+            $rows .= '<br><span style="color:#515a60;font-size:14px;">'
+                . h(mb_substr((string) $first, 0, 160, 'UTF-8'))
+                . '</span>';
+        }
+        $rows .= '</li>';
+    }
+
+    $extra = count($tasks) - count($shown);
+    if ($extra > 0) {
+        $rows .= '<li style="color:#515a60;">and ' . (int) $extra . ' more</li>';
+    }
+
+    return '<div style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;'
+        . 'font-size:16px;line-height:1.5;color:#222;max-width:520px;">'
+        . '<h1 style="font-size:19px;margin:0 0 4px 0;color:' . $accent . ';">' . h(app_name()) . '</h1>'
+        . '<p style="margin:0 0 18px 0;color:#515a60;">Due at the house:</p>'
+        . '<ul style="padding-left:20px;margin:0 0 22px 0;">' . $rows . '</ul>'
+        . '<p style="margin:0;"><a href="' . $url . '" style="color:' . $accent . ';">Open ' . h(app_name()) . '</a></p>'
+        . '</div>';
+}
+
+/**
+ * THE CONTRACT. Send one digest covering every due task. Returns success.
+ *
+ * $today is a PARAMETER, not a call to sw_today(), for the reason this file's
+ * header gives: "due tomorrow" is what the subject line SAYS, so a one-day
+ * skew is a lie printed on a lock screen. The cron passes its own single
+ * $today and the tests pass a fixed one. The default exists so the
+ * two-argument contract holds; nothing should be reaching it.
+ *
+ * An EMPTY task list sends nothing and reports success. "There was nothing to
+ * do" is not a failure, and a cron that treats it as one would log an error
+ * every day the house was fine.
+ *
+ * @param list<array> $tasks Rows from maintenance_tasks, each with at least
+ *                           title, next_due_on and the recurrence columns.
+ */
+function send_task_reminder(array $tasks, ?string $today = null): bool
 {
     $today = $today ?? sw_today();
 
-    $subject = mailer_subject($person, $type, $dueDate, $today);
+    if ($tasks === array()) {
+        mailer_last_error('');
+        return true;
+    }
 
     return mailer_send(
-        $subject,
-        mailer_body_text($person, $type, $dueDate, $today),
-        mailer_body_html($person, $type, $dueDate, $today)
+        mailer_subject($tasks, $today),
+        mailer_body_text($tasks, $today),
+        mailer_body_html($tasks, $today)
     );
 }

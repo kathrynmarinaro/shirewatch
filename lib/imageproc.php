@@ -14,11 +14,22 @@
 
 declare(strict_types=1);
 
-/** Hard ceiling per uploaded file, per the contract. */
-const IMAGEPROC_MAX_BYTES = 25 * 1024 * 1024;
+/**
+ * Hard ceiling per uploaded file. Config-driven here, unlike the Gallery's
+ * hardcoded constant, because this app accepts DOCUMENTS as well as photos and
+ * a scanned warranty booklet is a different size of thing from a snapshot.
+ */
+function imageproc_max_bytes(): int
+{
+    return max(1, (int) cfg('media.max_upload_mb', 25)) * 1024 * 1024;
+}
 
-/** Sub-directories of public/uploads/ we are allowed to write into. */
-const IMAGEPROC_DIRS = array('original', 'thumb', 'detail');
+/* Sub-directories of public/uploads/ we are allowed to write into.
+ *
+ * 'docs' is new here and is NEVER a destination for imageproc_derive() — a PDF
+ * has nothing to resize. It is in this whitelist only so that
+ * imageproc_upload_path() will build a path into it; see lib/media.php. */
+const IMAGEPROC_DIRS = array('original', 'thumb', 'detail', 'docs');
 
 /* ------------------------------------------------------------ detection */
 
@@ -258,9 +269,9 @@ function imageproc_fit(int $w, int $h, int $max): array
  */
 function imageproc_derive(string $srcAbs, string $slug, array $sniff): array
 {
-    $thumbMax = max(32, (int) cfg('processing.thumb_max', 300));
-    $detailMax= max($thumbMax, (int) cfg('processing.detail_max', 1600));
-    $quality  = min(100, max(1, (int) cfg('processing.webp_quality', 82)));
+    $thumbMax = max(32, (int) cfg('media.thumb_max', 400));
+    $detailMax= max($thumbMax, (int) cfg('media.detail_max', 1600));
+    $quality  = min(100, max(1, (int) cfg('media.webp_quality', 82)));
 
     imageproc_ensure_dir('thumb');
     imageproc_ensure_dir('detail');

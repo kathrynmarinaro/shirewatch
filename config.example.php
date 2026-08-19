@@ -24,6 +24,19 @@ return array(
      */
     'app_name' => 'Shirewatch',
 
+    /* Absolute URL of the app's root, used to build the link in a
+     * reminder email.
+     *
+     * REQUIRED FOR THE CRON, and only for it. Every screen builds its
+     * own links relative to itself and never needs this; but the cron
+     * runs on the command line, where there is no request to infer a
+     * host from, so without this the link in the email degrades to a
+     * bare "index.php" — which is not a link.
+     *
+     * No trailing slash. https, once SSL is on.
+     */
+    'app_url' => '',
+
     /* ---- database ---------------------------------------------------
      * Create the DB in hPanel, then paste those values here.
      * Host is usually 'localhost'.
