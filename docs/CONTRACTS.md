@@ -46,7 +46,7 @@ need to write a line of CSS, a date calculation, or a query against `tags` or
 | **M1 · Tags** *(done)* | `public/tags.php`, `public/api/tag-*.php`, `public/assets/tags.js`, `public/assets/tagfield.js` |
 | **M2 · Media** *(done)* | `public/api/upload.php`, `public/api/worker.php`, `public/api/media-*.php`, `cron/process-queue.php`, `public/assets/upload.js`, `public/assets/lightbox.js` |
 | **M3 · Issues** *(done)* | `public/issues.php`, `public/issue.php`, `lib/issues.php`, `lib/render.php`, `public/api/issue-*.php`, `public/assets/{issues,issue}.js` |
-| **M4 · Maintenance** | `public/maintenance.php`, `public/task.php`, `lib/tasks.php`, `public/api/task-*.php`, `public/assets/maintenance.js` |
+| **M4 · Maintenance** *(done)* | `public/maintenance.php`, `public/task.php`, `lib/tasks.php`, `public/api/task-*.php`, `public/assets/maintenance.js` |
 | **M5 · Service & vendors** | `public/history.php`, `public/record.php`, `public/vendors.php`, `public/vendor.php`, `lib/records.php`, `lib/vendors.php`, `public/api/record-*.php`, `public/api/vendor-*.php`, `public/assets/{history,vendors}.js` |
 | **M6 · Dashboard & reminders** | `public/index.php`, `public/cron.php`, `lib/dashboard.php`, `tools/cron-reminders.php`, `public/api/timeline.php`, `public/assets/dashboard.js` |
 | **M7 · Integration** | `DEPLOY.txt`, `README.md`, `public/api/export.php`, `public/component-test.html` |
@@ -477,6 +477,48 @@ place rather than in each template.
 
 Gallery tiles are real `<a>` elements to the detail image, so the photo is
 reachable with no JS; `lightbox.js` upgrades them.
+
+---
+
+## 8c. Maintenance — `lib/tasks.php`
+
+**Nothing outside `lib/tasks.php` writes SQL against `maintenance_tasks` or
+`task_completions`.** The dashboard and the reminder cron both read through
+`tasks_due()` and `tasks_project()`, so the email cannot disagree with the
+screen.
+
+| Function | Does |
+|---|---|
+| `tasks_list($filters)` | `active`, `tag_ids`, `search`. Decorated with `tags` |
+| `task_get($id)` / `task_completions($id)` | one task / its log, **newest first** |
+| `task_create($data)` / `task_save($id, $data)` | throws `bad_recurrence` for a rule that can never fire |
+| `task_complete($id, $data)` | **the only thing that moves `next_due_on`.** Returns the new date |
+| `task_set_active($id, bool)` / `task_delete($id)` | pause / remove |
+| `tasks_due($through)` | the dashboard's and the cron's read |
+| `tasks_project($after, $until)` | the forward timeline, occurrences projected |
+| `task_rule($task)` | the columns `recur_next_after()` reads |
+
+**`next_due_on` moves in `task_complete()` and nowhere else.** Not when a
+reminder is sent — `task_reminder_sends` is what stops the duplicate email. M6
+must not advance a task as a side effect of emailing about it.
+
+Which date the next one counts from:
+
+| Rule | Anchor |
+|---|---|
+| `interval` + `from 'completion'` | the day you did it — wear-based, so late moves the next one late |
+| `interval` + `from 'due'` | the date it *was* due, then walked forward until it lands in the future |
+| `months` | always the completion date; `interval_from` has no meaning — the calendar decides |
+
+`tasks_project()` returns `{on_date, id, title, projected}`. **`projected` is
+false for the stored occurrence and true for every calculated one after it** —
+render those with `.is-projected`, because the app has not promised you those
+dates. Every date comes from `recur_next_after()`, the same function completion
+uses, so the two can never disagree.
+
+**A rule that can never produce a date is refused at creation**, not stored. A
+task that silently never comes due is indistinguishable from nothing being due,
+which is the worst failure this app has.
 
 ---
 

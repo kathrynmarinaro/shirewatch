@@ -62,6 +62,7 @@ require_once $appRoot . '/lib/tags.php';
 require_once $appRoot . '/lib/media.php';
 require_once $appRoot . '/lib/issues.php';
 require_once $appRoot . '/lib/render.php';
+require_once $appRoot . '/lib/tasks.php';
 
 /* ------------------------------------------------------------------ harness */
 
@@ -817,6 +818,187 @@ ok(issue_delete($doomed), 'an issue deletes');
 is_same(issue_get($doomed), null, 'and is gone');
 is_same((int) q('SELECT COUNT(*) FROM issue_updates WHERE id = ?', array($upd))->fetchColumn(), 0,
     'taking its timeline with it');
+
+/* ======================================================= M4 · maintenance */
+
+section('M4 — Maintenance and the schedule');
+
+foreach (array(
+    'lib/tasks.php', 'public/maintenance.php', 'public/task.php',
+    'public/assets/maintenance.js',
+    'public/api/task-save.php', 'public/api/task-complete.php',
+    'public/api/task-uncomplete.php', 'public/api/task-active.php',
+    'public/api/task-delete.php',
+) as $file) {
+    ok(is_file($appRoot . '/' . $file), "M4 ships $file");
+}
+
+foreach (glob($appRoot . '/public/api/task-*.php') as $endpoint) {
+    $src = (string) file_get_contents($endpoint);
+    ok(str_contains($src, 'require_login_api()') && str_contains($src, 'require_same_origin()'),
+        basename($endpoint) . ' is gated and CSRF-checked');
+}
+
+/* ---- creation ---------------------------------------------------------- */
+
+$filter = task_create(array(
+    'title'          => 'Change HVAC filter',
+    'instructions'   => "16x25x1\nShelf above the dryer",
+    'recur_kind'     => 'interval',
+    'interval_count' => 3,
+    'interval_unit'  => 'month',
+    'interval_from'  => 'completion',
+    'next_due_on'    => '2026-09-01',
+));
+ok($filter > 0, 'task_create returns an id');
+is_same(task_get($filter)['next_due_on'], '2026-09-01', 'with the due date it was given');
+
+/* A rule that could never produce a date is refused at the door. A task that
+ * silently never comes due is indistinguishable from nothing being due, which
+ * is the worst possible failure for a reminder app. */
+ok(throws(static fn() => task_create(array(
+    'title' => 'Broken', 'recur_kind' => 'months', 'recur_months' => 'abc',
+))), 'a recurrence that can never fire is refused, not stored');
+ok(throws(static fn() => task_create(array(
+    'title' => 'Broken', 'recur_kind' => 'interval', 'interval_count' => 0,
+))), 'and so is a zero interval');
+ok(throws(static fn() => task_create(array('title' => '  '))), 'and a task with no title');
+
+/* ---- completion moves the schedule, and NOTHING ELSE DOES -------------- */
+
+/* Wear-based: the filter's clock starts when you changed it, so doing it late
+ * moves the next one late too. */
+$next = task_complete($filter, array('completed_on' => '2026-09-20'));
+is_same($next, '2026-12-20', 'from-completion counts the interval from the day you did it');
+is_same(task_get($filter)['last_completed_on'], '2026-09-20', 'and records when that was');
+is_same(count(task_completions($filter)), 1, 'and writes a history row');
+
+/* Schedule-anchored: does not drift later every time you are a week busy. */
+$gutters = task_create(array(
+    'title'         => 'Gutters',
+    'recur_kind'    => 'months',
+    'recur_months'  => '3,10',
+    'recur_day'     => 15,
+    'next_due_on'   => '2026-10-15',
+));
+is_same(task_complete($gutters, array('completed_on' => '2026-10-22')), '2027-03-15',
+    'a seasonal task jumps to the next month in its list, however late it was done');
+
+/* THE ONE THAT LOOKS LIKE A BUG. Skipping a season entirely does not roll the
+ * task forward — it stays overdue and says so. */
+$skipped = task_create(array(
+    'title' => 'Sprinklers', 'recur_kind' => 'months', 'recur_months' => '10',
+    'recur_day' => 20, 'next_due_on' => '2025-10-20',
+));
+is_same(task_get($skipped)['next_due_on'], '2025-10-20',
+    'a task nobody completed stays put — it does not silently roll to next year');
+
+$due = array_column(tasks_due('2026-08-19'), 'id');
+ok(in_array($skipped, $due, true), 'and shows as overdue, which is the true statement');
+
+/* from-'due' must not leave a badly overdue task instantly overdue again —
+ * that reads as the button having done nothing. */
+$monthly = task_create(array(
+    'title' => 'Monthly, badly overdue', 'recur_kind' => 'interval',
+    'interval_count' => 1, 'interval_unit' => 'month', 'interval_from' => 'due',
+    'next_due_on' => '2026-01-05',
+));
+$after = task_complete($monthly, array('completed_on' => '2026-08-19'));
+ok($after > '2026-08-19',
+    'completing a badly overdue from-due task lands in the FUTURE, not instantly overdue again');
+
+/* ---- undo -------------------------------------------------------------- */
+
+$twice = task_create(array(
+    'title' => 'Twice done', 'recur_kind' => 'interval', 'interval_count' => 3,
+    'interval_unit' => 'month', 'next_due_on' => '2026-01-01',
+));
+task_complete($twice, array('completed_on' => '2026-01-10'));
+task_complete($twice, array('completed_on' => '2026-04-12'));
+is_same(task_get($twice)['next_due_on'], '2026-07-12', 'two completions advance twice');
+
+$history = task_completions($twice);
+q('DELETE FROM task_completions WHERE id = ?', array($history[0]['id']));
+$prev = q('SELECT completed_on FROM task_completions WHERE task_id = ? ORDER BY completed_on DESC LIMIT 1',
+    array($twice))->fetch();
+is_same((string) $prev['completed_on'], '2026-01-10',
+    'undoing the newest completion leaves the earlier one as the anchor');
+
+/* ---- pause and delete -------------------------------------------------- */
+
+ok(task_set_active($twice, false), 'a task can be paused');
+ok(!in_array($twice, array_column(tasks_due('2099-01-01'), 'id'), true),
+    'a paused task is never due');
+is_same(count(task_completions($twice)), 1, 'but keeps its history');
+task_set_active($twice, true);
+
+/* ---- the list ---------------------------------------------------------- */
+
+$active = tasks_list();
+ok(count($active) >= 4, 'the list returns active tasks');
+$paused = tasks_list(array('active' => false));
+is_same($paused, array(), 'and the paused view is separate');
+
+$kitchen = tag_find(TAG_LOCATION, 'Kitchen');
+tags_set('task', $filter, array($kitchen['id']));
+is_same(count(tasks_list(array('tag_ids' => array($kitchen['id'])))), 1, 'tags filter the list');
+ok(array_key_exists('tags', $active[0]), 'and rows are decorated in batch');
+
+/* ---- the forward projection (the dashboard depends on this) ------------ */
+
+$quarterly = task_create(array(
+    'title' => 'Quarterly', 'recur_kind' => 'interval', 'interval_count' => 3,
+    'interval_unit' => 'month', 'next_due_on' => '2026-09-01',
+));
+
+$projected = tasks_project('2026-08-19', '2028-08-19');
+$mine = array_values(array_filter($projected, static fn(array $r): bool => $r['id'] === $quarterly));
+
+ok(count($mine) >= 7,
+    'a quarterly task projects forward across a two-year horizon rather than appearing once');
+is_same($mine[0]['on_date'], '2026-09-01', 'the first occurrence is the STORED date');
+is_same($mine[0]['projected'], false, 'and it is not marked as a prediction');
+is_same($mine[1]['on_date'], '2026-12-01', 'the second is three months later');
+is_same($mine[1]['projected'], true, 'and IS marked as a prediction — nothing was written');
+
+/* The projection must agree with what completion actually produces, or the
+ * timeline eventually shows a date the app would never make. */
+is_same($mine[1]['on_date'], recur_next_after(task_rule(task_get($quarterly)), $mine[0]['on_date']),
+    'the projection uses the same recur_next_after() as the completion path');
+
+$dates = array_column($projected, 'on_date');
+$sorted = $dates;
+sort($sorted);
+is_same($dates, $sorted, 'the projected stream comes back in chronological order');
+ok(count(array_filter($dates, static fn(string $d): bool => $d <= '2026-08-19')) === 0,
+    'and contains nothing on or before the cursor date');
+
+/* A task whose rule cannot advance must not loop forever filling the stream
+ * with one row. */
+q("UPDATE maintenance_tasks SET recur_months = 'nonsense', recur_kind = 'months' WHERE id = ?",
+    array($quarterly));
+$broken = tasks_project('2026-08-19', '2028-08-19');
+$brokenRows = array_filter($broken, static fn(array $r): bool => $r['id'] === $quarterly);
+ok(count($brokenRows) <= 1, 'a task with an unusable rule contributes at most one row, never a loop');
+
+/* ---- cleaning ---------------------------------------------------------- */
+
+$switched = task_clean_rule(array(
+    'recur_kind' => 'months', 'recur_months' => '3,10', 'recur_day' => 15,
+    'interval_count' => 3, 'interval_unit' => 'month',
+));
+is_same($switched['interval_count'], null,
+    'switching to a seasonal rule NULLS the interval columns — a row carrying both is ambiguous');
+is_same($switched['recur_months'], '3,10', 'and keeps the months');
+
+$backAgain = task_clean_rule(array(
+    'recur_kind' => 'interval', 'interval_count' => 6, 'interval_unit' => 'month',
+    'recur_months' => '3,10',
+));
+is_same($backAgain['recur_months'], null, 'and switching back nulls the months');
+
+is_same(task_clean_from('nonsense'), 'completion', 'an unknown anchor falls back to from-completion');
+is_same(task_clean_from('due'), 'due', 'and "due" is honoured');
 
 /* =================================================================== done */
 
