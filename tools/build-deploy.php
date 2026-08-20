@@ -60,7 +60,11 @@ const INCLUDE_ROOT_FILES = array(
  * Shirewatch it lives under public/ (the browser has to be able to fetch a
  * photo), so it is copied as part of public/ below. Its .htaccess is on the
  * required list all the same. */
-const INCLUDE_DIRS = array('lib', 'tools', 'cron');
+/* data/ carries starter-tasks.php, which tools/install-starter-tasks.php
+ * reads on the server. Leaving it out makes the installer fail at setup with a
+ * missing-file error, on the one step somebody runs exactly once and has no
+ * reason to debug. */
+const INCLUDE_DIRS = array('lib', 'tools', 'cron', 'data');
 
 /* Never leaves this machine.
  *
@@ -71,6 +75,12 @@ const SKIP_FILES = array(
     'run-tests.php',
     'test-harness.php',
     'build-deploy.php',
+    'seed.php',
+    'hosting-check.php',
+    /* Sits in the WEB ROOT and needs no login. It exposes nothing but markup,
+     * but it is a page with the app's name on it that anybody can fetch, and
+     * the correct number of those is zero. */
+    'component-test.html',
     '.DS_Store',
 );
 
@@ -90,6 +100,7 @@ const REQUIRED_HTACCESS = array(
     '.htaccess',
     'lib/.htaccess',
     'tools/.htaccess',
+    'data/.htaccess',
     'public/uploads/.htaccess',
 );
 

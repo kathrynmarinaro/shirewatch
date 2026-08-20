@@ -184,14 +184,33 @@ unnecessary.
 
 NEVER UPLOAD
 ------------
-tools/run-tests.php, tools/test-harness.php, tools/build-deploy.php and
-tools/seed.php are excluded from this bundle automatically. seed.php writes
-directly to the database; the correct number of ways to reach it from a
-browser is zero.
+These are excluded from the bundle automatically, and the exclusion is
+tested — but check after any manual copy:
+
+    tools/run-tests.php          the test suite
+    tools/test-harness.php       the SQLite translator
+    tools/build-deploy.php       this bundler
+    tools/seed.php               WRITES DIRECTLY TO THE DATABASE
+    tools/hosting-check.php      reports PHP limits and extensions
+    public/component-test.html   a login-free page in the web root
 
 If you ran tools/hosting-check.php over the web in step 1, DELETE IT NOW.
-It reports PHP limits and extension versions, which is reconnaissance you
-have no reason to publish.
+What it reports is reconnaissance you have no reason to publish.
+
+
+EXPORT AND RESTORE
+------------------
+Menu -> Export data gives you a .zip containing:
+
+    data.json             every table
+    service-records.csv   the money, openable in a spreadsheet
+    uploads/              every photo and document, at its real path
+
+To restore: load schema.sql into a fresh database, insert the rows from
+data.json, and copy uploads/ back into public/.
+
+?f=json on the same URL gives the data without the files, which is the one
+to use if the zip extension is missing on your plan.
 
 
 BACKUPS

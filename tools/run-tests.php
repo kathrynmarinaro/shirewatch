@@ -1308,6 +1308,95 @@ foreach ($projected as $row) {
     break;
 }
 
+/* ======================================================= M7 · integration */
+
+section('M7 — Integration');
+
+foreach (array(
+    'public/api/export.php', 'public/component-test.html',
+    'DEPLOY.txt', 'README.md', 'CLAUDE.md', 'docs/CONTRACTS.md', 'docs/DELEGATION-PLAN.md',
+) as $file) {
+    ok(is_file($appRoot . '/' . $file), "M7 ships $file");
+}
+
+/* EVERY SCREEN AND ENDPOINT IS GATED. This is the assertion that catches the
+ * new file somebody adds later and forgets to put a gate on — which is
+ * invisible until the day it matters. */
+foreach (glob($appRoot . '/public/*.php') as $screen) {
+    $name = basename($screen);
+    $src  = (string) file_get_contents($screen);
+
+    if (in_array($name, array('login.php', 'logout.php'), true)) {
+        continue;                                  // the gate itself
+    }
+    if ($name === 'cron.php') {
+        /* THE ONE UNAUTHENTICATED SURFACE, deliberately — a scheduler has no
+         * session. It carries its own token gate instead. */
+        ok(str_contains($src, 'hash_equals('), "$name is token-gated instead");
+        continue;
+    }
+    ok(str_contains($src, 'require_login_page()'), "$name is behind the login gate");
+}
+
+foreach (glob($appRoot . '/public/api/*.php') as $endpoint) {
+    $name = basename($endpoint);
+    $src  = (string) file_get_contents($endpoint);
+    ok(str_contains($src, 'require_login_api()'), "api/$name is behind the login gate");
+
+    /* Reads may be GET; anything that writes must carry the CSRF check. */
+    $isRead = str_contains($src, "require_method('GET')");
+    ok($isRead || str_contains($src, 'require_same_origin()'),
+        "api/$name checks same-origin (or is a read)");
+}
+
+/* No screen may hand-roll SQL — the repo layer owns every table, and a query
+ * in a template is how a schema change starts missing one caller. */
+foreach (glob($appRoot . '/public/*.php') as $screen) {
+    $src = (string) file_get_contents($screen);
+    ok(!preg_match('/\bq\(\s*[\x27"]\s*(SELECT|INSERT|UPDATE|DELETE)/i', $src),
+        basename($screen) . ' contains no hand-written SQL');
+}
+
+/* The date rule, enforced rather than remembered: every scheduling comparison
+ * is against a stored DATE column computed in PHP. */
+foreach (glob($appRoot . '/lib/*.php') as $lib) {
+    $name = basename($lib);
+    if ($name === 'auth.php') {
+        continue;      // login throttling deliberately uses MySQL's own clock
+    }
+    /* Comments STRIPPED first. Several of these files explain the rule in
+     * prose — "there is no DATE_ADD here" is exactly the sentence a naive grep
+     * flags, which would fire this assertion on the files documenting it best. */
+    $src = (string) php_strip_whitespace($lib);
+    ok(!preg_match('/\\b(DATE_ADD|DATE_SUB)\\b/i', $src),
+        "lib/$name uses no DATE_ADD or DATE_SUB — dates are computed in PHP");
+}
+
+/* The component page is the visual regression net. A class rendered there that
+ * the stylesheet has never heard of means one of the two moved without the
+ * other. */
+$componentHtml = (string) file_get_contents($appRoot . '/public/component-test.html');
+$css = (string) file_get_contents($appRoot . '/public/assets/styles.css');
+preg_match_all('/class="([^"]+)"/', $componentHtml, $matches);
+$classes = array();
+foreach ($matches[1] as $attr) {
+    foreach (preg_split('/\s+/', $attr) as $class) {
+        if ($class !== '') { $classes[$class] = true; }
+    }
+}
+$unknown = array_values(array_filter(array_keys($classes),
+    static fn(string $c): bool => !str_contains($css, '.' . $c)));
+is_same($unknown, array(), 'every class on component-test.html exists in styles.css');
+ok(count($classes) > 50, 'and the page covers the component vocabulary rather than a corner of it');
+
+/* build-deploy validates the finished app; these are the files it insists on. */
+$deploySrc = (string) file_get_contents($appRoot . '/tools/build-deploy.php');
+foreach (array('public/index.php', 'public/cron.php', 'tools/cron-reminders.php') as $required) {
+    ok(str_contains($deploySrc, basename($required)),
+        "build-deploy checks for $required before shipping");
+}
+ok(str_contains($deploySrc, 'component-test'), 'and keeps component-test.html out of the bundle');
+
 /* =================================================================== done */
 
 printf("\n");

@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Shirewatch — components</title>
+<link rel="stylesheet" href="assets/styles.css">
+</head>
+<!--
+  EVERY COMPONENT ON ONE PAGE. No auth, no database, no PHP.
+
+  This is where you check that a stylesheet change did not quietly break the
+  severity pills or the timeline rail, without seeding data and clicking
+  through six screens to find out. Book Tracker has the same file for the same
+  reason.
+
+  DO NOT UPLOAD THIS TO THE SERVER. It sits in the web root and needs no
+  login; tools/build-deploy.php keeps it out of the bundle.
+
+  Anything rendered here should also EXIST in docs/CONTRACTS.md §5. If you add
+  a component to styles.css, add it here too — a component nobody can see in
+  isolation is one that gets reinvented.
+-->
+<body>
+<main class="wrap">
+
+  <header class="screen-head">
+    <h1>Components</h1>
+    <div class="head-actions">
+      <button class="icon-btn" type="button" aria-label="Menu">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h16"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <h2 class="cat-head">Severity — NULL renders nothing at all</h2>
+  <p class="chips">
+    <span class="sev sev-1">Watch</span>
+    <span class="sev sev-2">Minor</span>
+    <span class="sev sev-3">Major</span>
+    <span class="sev sev-4">Urgent</span>
+    <span class="hint">← and unset is the gap after this arrow</span>
+  </p>
+
+  <h2 class="cat-head">Stars — half only for a vendor average</h2>
+  <p>
+    <span class="stars" role="img" aria-label="3.5 out of 5">
+      <span class="star is-on"><svg viewBox="0 0 24 24"><path d="M12 2l3 6.5 7 .9-5 4.8 1.2 7L12 18l-6.2 3.2L7 14.2l-5-4.8 7-.9z"/></svg></span>
+      <span class="star is-on"><svg viewBox="0 0 24 24"><path d="M12 2l3 6.5 7 .9-5 4.8 1.2 7L12 18l-6.2 3.2L7 14.2l-5-4.8 7-.9z"/></svg></span>
+      <span class="star is-on"><svg viewBox="0 0 24 24"><path d="M12 2l3 6.5 7 .9-5 4.8 1.2 7L12 18l-6.2 3.2L7 14.2l-5-4.8 7-.9z"/></svg></span>
+      <span class="star is-half"><svg viewBox="0 0 24 24"><path d="M12 2l3 6.5 7 .9-5 4.8 1.2 7L12 18l-6.2 3.2L7 14.2l-5-4.8 7-.9z"/></svg></span>
+      <span class="star"><svg viewBox="0 0 24 24"><path d="M12 2l3 6.5 7 .9-5 4.8 1.2 7L12 18l-6.2 3.2L7 14.2l-5-4.8 7-.9z"/></svg></span>
+    </span>
+    <span class="stars-num">3.5</span>
+    <span class="stars-note">Overridden. Their jobs average 4.0 over 2 rated jobs.</span>
+  </p>
+
+  <h2 class="cat-head">Chips</h2>
+  <div class="filterbar">
+    <span class="chip is-on">Selected</span>
+    <span class="chip is-location">Kitchen</span>
+    <span class="chip">Plumbing</span>
+    <span class="chip is-static">Read only<button class="chip-x" aria-label="Remove">×</button></span>
+  </div>
+
+  <h2 class="cat-head">Tag picker</h2>
+  <div class="tagfield">
+    <span class="chip is-static is-location">Ext Studio<button class="chip-x">×</button></span>
+    <span class="chip is-static">Roofing<button class="chip-x">×</button></span>
+  </div>
+  <button class="tagfield-add">+ Add tag</button>
+
+  <h2 class="cat-head">List rows <span class="cat-count">3</span></h2>
+  <ul class="list">
+    <li class="list-row">
+      <div class="row-slide">
+        <button class="row-check" type="button" aria-pressed="false" aria-label="Done"></button>
+        <span class="row-body">
+          <span class="row-text">Change HVAC filter</span>
+          <span class="row-sub"><span class="is-overdue">5 days ago</span> · Every 3 months</span>
+        </span>
+      </div>
+    </li>
+    <li class="list-row">
+      <div class="row-slide">
+        <span class="row-body">
+          <span class="row-text">A title long enough to wrap onto a second line on a narrow phone screen</span>
+          <span class="row-sub">Kitchen · Plumbing · 3 photos</span>
+        </span>
+        <span class="sev sev-3">Major</span>
+      </div>
+    </li>
+    <li class="list-row">
+      <div class="row-slide">
+        <span class="drag-handle" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 9h14M5 15h14"/></svg></span>
+        <span class="row-text">With a drag handle</span>
+      </div>
+    </li>
+  </ul>
+
+  <h2 class="cat-head">Needs-action accordion</h2>
+  <details class="accordion" open>
+    <summary class="accordion-head">Needs action now <span class="action-count">3</span></summary>
+    <div class="accordion-body">
+      <section class="action-group">
+        <h2 class="cat-head">Issues <span class="cat-count">1</span></h2>
+        <ul class="list"><li class="list-row"><div class="row-slide">
+          <span class="row-body"><span class="row-text">Damp patch</span>
+          <span class="row-sub"><span class="is-overdue">Check 4 days ago</span></span></span>
+          <span class="sev sev-3">Major</span>
+        </div></li></ul>
+      </section>
+    </div>
+  </details>
+  <details class="accordion">
+    <summary class="accordion-head">Nothing due <span class="action-count is-clear">0</span></summary>
+    <div class="accordion-body"><p class="empty">Nothing needs doing.</p></div>
+  </details>
+
+  <h2 class="cat-head">Forward timeline</h2>
+  <ol class="timeline">
+    <li class="timeline-head">Saturday 22 August</li>
+    <li class="timeline-item">
+      <a class="timeline-title" href="#">Flush water heater</a>
+      <span class="timeline-sub">Maintenance</span>
+    </li>
+    <li class="timeline-item is-issue">
+      <a class="timeline-title" href="#">Ceiling crack — check back</a>
+      <span class="timeline-sub">Check back</span>
+    </li>
+    <li class="timeline-head">Tuesday 1 December</li>
+    <li class="timeline-item is-projected">
+      <a class="timeline-title" href="#">Change HVAC filter</a>
+      <span class="timeline-sub">Maintenance · projected</span>
+    </li>
+  </ol>
+  <p class="timeline-more">That is as far ahead as the app looks.</p>
+
+  <h2 class="cat-head">Gallery</h2>
+  <ul class="gallery">
+    <li class="gallery-item"><img src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><rect width='200' height='200' fill='%236a9bbd'/></svg>" alt=""><span class="gallery-date">4 March 2026</span></li>
+    <li class="gallery-item is-pending"></li>
+    <li class="gallery-item is-failed"></li>
+  </ul>
+
+  <h2 class="cat-head">Documents</h2>
+  <ul class="doclist">
+    <li><a class="doc" href="#">
+      <svg viewBox="0 0 24 24"><path d="M6 2h8l4 4v16H6z"/><path d="M14 2v5h5"/></svg>
+      <span class="doc-name">invoice-brightwater-2026-03.pdf</span>
+      <span class="doc-size">240 KB</span>
+    </a></li>
+  </ul>
+
+  <h2 class="cat-head">Meta rows</h2>
+  <dl class="meta">
+    <dt>Vendor</dt><dd><a href="#">Brightwater Plumbing</a></dd>
+    <dt>Cost</dt><dd>$285.00</dd>
+    <dt>Cost (unrecorded)</dt><dd class="hint">renders as nothing, not $0.00</dd>
+  </dl>
+
+  <h2 class="cat-head">Forms</h2>
+  <form>
+    <label class="field"><span>Title</span><input class="input" type="text" value="Hairline crack"></label>
+    <label class="field"><span>Severity</span>
+      <select class="input"><option>Not set</option><option>Watch</option></select>
+    </label>
+    <label class="field"><span>With an error</span>
+      <input class="input" type="text"><span class="field-err">Give it a title first.</span>
+    </label>
+    <form class="composer">
+      <input class="composer-input" type="text" placeholder="Add a room">
+      <button class="composer-add" type="submit">Add</button>
+    </form>
+  </form>
+
+  <h2 class="cat-head">Buttons</h2>
+  <p class="row">
+    <button class="btn-primary">Primary</button>
+    <button class="btn-secondary">Secondary</button>
+    <button class="btn-ghost">Ghost</button>
+    <button class="btn-danger">Danger</button>
+  </p>
+  <p class="row">
+    <button class="link-btn">Link button</button>
+    <button class="tap-text">Tap text</button>
+    <button class="tap-text danger">Tap text, danger</button>
+  </p>
+
+  <h2 class="cat-head">Empty states and hints</h2>
+  <p class="empty">Nothing logged yet.</p>
+  <p class="hint">A hint, which is smaller and quieter.</p>
+  <p class="muted">Muted text.</p>
+
+  <h2 class="cat-head">Queue pill (fixed — look at the bottom)</h2>
+  <div class="queue-pill" style="position: static; transform: none; display: inline-flex;">
+    <span class="queue-spinner" aria-hidden="true"></span>
+    <span>Processing 3…</span>
+  </div>
+
+</main>
+
+<nav class="tabbar" aria-label="Sections">
+  <a href="#" class="is-active" aria-current="page">Dashboard</a>
+  <a href="#">Issues</a>
+  <a href="#">Maintenance</a>
+  <a href="#">Vendors</a>
+</nav>
+</body>
+</html>

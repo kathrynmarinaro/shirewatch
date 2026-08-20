@@ -5,8 +5,8 @@ without updating this file first** — the next pass is written against it. If y
 need a change in someone else's territory, note it in your report rather than
 editing across the line.
 
-Foundation is done. Everything in §2–§6 already exists, is linted, and is
-exercised by `php tools/run-tests.php` (104 assertions, green). You should not
+**All seven passes are done.** Everything below exists, is linted, and is
+exercised by `php tools/run-tests.php` (526 assertions, green). You should not
 need to write a line of CSS, a date calculation, or a query against `tags` or
 `media`.
 
@@ -49,7 +49,7 @@ need to write a line of CSS, a date calculation, or a query against `tags` or
 | **M4 · Maintenance** *(done)* | `public/maintenance.php`, `public/task.php`, `lib/tasks.php`, `public/api/task-*.php`, `public/assets/maintenance.js` |
 | **M5 · Service & vendors** *(done)* | `public/history.php`, `public/record.php`, `public/vendors.php`, `public/vendor.php`, `lib/records.php`, `lib/vendors.php`, `public/api/record-*.php`, `public/api/vendor-*.php`, `public/assets/{history,vendors}.js` |
 | **M6 · Dashboard & reminders** *(done)* | `public/index.php`, `public/cron.php`, `lib/dashboard.php`, `tools/cron-reminders.php`, `public/api/timeline.php`, `public/assets/dashboard.js` |
-| **M7 · Integration** | `DEPLOY.txt`, `README.md`, `public/api/export.php`, `public/component-test.html` |
+| **M7 · Integration** *(done)* | `DEPLOY.txt`, `README.md`, `public/api/export.php`, `public/component-test.html` |
 
 Add your tests to `tools/run-tests.php` in a new `section()`. **Don't rewrite
 the existing sections** — they are the regression net for the schema, the tag
