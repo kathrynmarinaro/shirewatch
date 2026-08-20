@@ -44,11 +44,6 @@ $issues = issues_list(array(
     'search'   => $search,
 ));
 
-/* Both vocabularies in one bar. Rooms first: "where is it" is how you
- * remember an issue, and "what kind of thing is it" is how you group them
- * afterwards. */
-$filterTags = array_merge(tags_of_kind(TAG_LOCATION), tags_of_kind(TAG_CATEGORY));
-
 /** A URL with one filter flipped, preserving everything else. */
 function issues_url(array $overrides = array()): string
 {
@@ -110,12 +105,7 @@ screen_head('Issues', page_menu());
     <a class="chip<?= $statusParam === 'all' ? ' is-on' : '' ?>" href="<?= h(issues_url(array('status' => 'all'))) ?>">All</a>
   </div>
 
-  <div class="filterbar" role="group" aria-label="Filter by room or system">
-    <?php foreach ($filterTags as $tag): ?>
-      <a class="chip<?= in_array($tag['id'], $tagIds, true) ? ' is-on' : '' ?><?= $tag['kind'] === TAG_LOCATION ? ' is-location' : '' ?>"
-         href="<?= h(issues_tag_url($tag['id'])) ?>"><?= h($tag['name']) ?></a>
-    <?php endforeach; ?>
-  </div>
+  <?= render_filters($tagIds, 'issues_tag_url') ?>
 
 <?php if ($tagIds !== array() || $search !== '' || $statusParam !== ''): ?>
   <p class="hint">
@@ -150,15 +140,14 @@ screen_head('Issues', page_menu());
                  put something that looks like data on every issue where none
                  was recorded (CLAUDE.md). */ ?>
         <?= render_severity($issue['severity']) ?>
+        <?= render_row_edit() ?>
       </div>
     </li>
   <?php endforeach; ?>
   </ul>
 <?php endif; ?>
 
-  <p class="stack">
-    <a class="btn-primary" href="issue.php?new=1">Log an issue</a>
-  </p>
+<?= render_fab('issue.php?new=1', 'Log an issue') ?>
 
 <script type="module" src="<?= asset('assets/issues.js') ?>"></script>
 <?php

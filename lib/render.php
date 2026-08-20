@@ -173,3 +173,118 @@ function render_cost(?string $cost): string
     }
     return '$' . number_format((float) $cost, 2);
 }
+
+/* ==================================================================
+ * FILTER GROUPS
+ * ------------------------------------------------------------------
+ * Shared by the Issues, Maintenance and Vendors lists. Three copies of
+ * this markup is three places to fix when the chip layout changes, and
+ * the third one always gets missed.
+ * ================================================================== */
+
+/**
+ * One collapsible group of filter chips.
+ *
+ * SELECTED CHIPS SORT TO THE FRONT so the filter you want to turn off is the
+ * first thing under your thumb rather than somewhere down a scrolling list of
+ * two dozen rooms. Everything else follows alphabetically. This happens at
+ * RENDER time — nothing is stored, so clearing a filter drops the chip back
+ * into place on the next load.
+ *
+ * OPEN when the group has an active filter, closed otherwise. A collapsed
+ * group hiding a filter that is silently narrowing your list is how you end up
+ * convinced the app has lost your data.
+ *
+ * The chips are LINKS, not buttons: the filter state lives in the URL, so it
+ * survives a reload, can be bookmarked, and the back button steps through it.
+ *
+ * @param list<array>            $tags     from tags_of_kind()
+ * @param list<int>              $selected currently-on tag ids
+ * @param callable(int): string  $urlFor   given a tag id, the URL that toggles it
+ */
+function render_filter_group(string $label, array $tags, array $selected, callable $urlFor): string
+{
+    if ($tags === array()) {
+        return '';
+    }
+
+    $on  = array();
+    $off = array();
+    foreach ($tags as $tag) {
+        if (in_array($tag['id'], $selected, true)) {
+            $on[] = $tag;
+        } else {
+            $off[] = $tag;
+        }
+    }
+
+    /* Alphabetical within each half. The author's typed order for the seeded
+     * rooms was off the top of her head, not a considered sequence, so
+     * scanning beats preserving it. tools/sort-tags-alphabetically.php
+     * renumbers sort_order to match, which keeps drag-reordering meaningful
+     * for anyone who does want their own order later. */
+    $byName = static fn(array $a, array $b): int => strcasecmp($a['name'], $b['name']);
+    usort($on, $byName);
+    usort($off, $byName);
+
+    $html = '<details class="filter-group"' . ($on === array() ? '' : ' open') . '>'
+        . '<summary class="filter-head">' . h($label);
+
+    if ($on !== array()) {
+        $html .= '<span class="filter-count">' . count($on) . '</span>';
+    }
+
+    $html .= '</summary><div class="filter-body">';
+
+    foreach (array_merge($on, $off) as $tag) {
+        $isOn = in_array($tag['id'], $selected, true);
+        $html .= '<a class="chip' . ($isOn ? ' is-on' : '')
+            . ($tag['kind'] === TAG_LOCATION ? ' is-location' : '') . '"'
+            . ' href="' . h($urlFor($tag['id'])) . '"'
+            . ($isOn ? ' aria-pressed="true"' : '')
+            . '>' . h($tag['name']) . '</a>';
+    }
+
+    return $html . '</div></details>';
+}
+
+/**
+ * The standard pair — Rooms then Systems — for the Issues and Maintenance
+ * lists. Rooms first: "where is it" is how you remember a thing; "what kind of
+ * thing is it" is how you group them afterwards.
+ */
+function render_filters(array $selected, callable $urlFor): string
+{
+    return '<div class="filters">'
+        . render_filter_group('Rooms & areas', tags_of_kind(TAG_LOCATION), $selected, $urlFor)
+        . render_filter_group('Systems', tags_of_kind(TAG_CATEGORY), $selected, $urlFor)
+        . '</div>';
+}
+
+/**
+ * The floating add button.
+ *
+ * Replaces the full-width button that sat under the list — which moved further
+ * away the more entries you had, so the action got harder exactly as the app
+ * got more useful.
+ */
+function render_fab(string $href, string $label): string
+{
+    return '<a class="fab" href="' . h($href) . '" aria-label="' . h($label) . '">'
+        . '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>'
+        . '</a>';
+}
+
+/**
+ * The pencil at the right of a row.
+ *
+ * aria-hidden and not focusable on purpose: the whole row is already a link to
+ * the same place, so this is a picture of what tapping does. A second tab stop
+ * leading to the identical destination is noise in a keyboard walk.
+ */
+function render_row_edit(): string
+{
+    return '<span class="row-edit" aria-hidden="true">'
+        . '<svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M14 5l4 4"/></svg>'
+        . '</span>';
+}

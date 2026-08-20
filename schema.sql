@@ -103,33 +103,40 @@ CREATE TABLE IF NOT EXISTS tags (
 -- against the room whose ceiling it came through — and they are what give the
 -- seeded gutter and chimney tasks somewhere to point.
 --
+-- ALPHABETICAL, not the order they were dictated in. That order was off the
+-- top of the author's head rather than a considered sequence, and scanning two
+-- dozen rooms for one name is much easier alphabetically. sort_order still
+-- drives the list everywhere, so the drag handles on the Rooms & Tags screen
+-- keep working — this just makes alphabetical the starting point.
+-- tools/sort-tags-alphabetically.php restores it on an existing install.
+--
 -- ALL OF THESE ARE DELETABLE. Nothing in the code may treat any seeded tag as
 -- special, the same rule as Grocery's four seeded stores.
 INSERT IGNORE INTO tags (kind, property_id, name, sort_order) VALUES
-  ('location', 1, 'Library',        10),
-  ('location', 1, 'Dining Room',    20),
-  ('location', 1, 'Entryway',       30),
-  ('location', 1, 'Living Room',    40),
+  ('location', 1, 'Breakfast Room',  10),
+  ('location', 1, 'Chimney',        20),
+  ('location', 1, 'Coat Closet',    30),
+  ('location', 1, 'Dining Room',    40),
   ('location', 1, 'Emma Bathroom',  50),
   ('location', 1, 'Emma Room',      60),
-  ('location', 1, 'Guest Room',     70),
-  ('location', 1, 'Coat Closet',    80),
-  ('location', 1, 'Main Bedroom',   90),
-  ('location', 1, 'Main Bathroom', 100),
-  ('location', 1, 'Sunroom',       110),
-  ('location', 1, 'Breakfast Room',120),
-  ('location', 1, 'Kitchen',       130),
-  ('location', 1, 'Space Bathroom',140),
+  ('location', 1, 'Entryway',       70),
+  ('location', 1, 'Ext Studio',     80),
+  ('location', 1, 'Garage',         90),
+  ('location', 1, 'Garage Attic',  100),
+  ('location', 1, 'Guest Room',    110),
+  ('location', 1, 'Gutters',       120),
+  ('location', 1, 'House Attic',   130),
+  ('location', 1, 'Kitchen',       140),
   ('location', 1, 'Laundry Room',  150),
-  ('location', 1, 'Garage',        160),
-  ('location', 1, 'Ext Studio',    170),
-  ('location', 1, 'Yard',          180),
-  ('location', 1, 'Roof',          190),
-  ('location', 1, 'Septic Tank',   200),
-  ('location', 1, 'Gutters',       210),
-  ('location', 1, 'Chimney',       220),
-  ('location', 1, 'Garage Attic',  230),
-  ('location', 1, 'House Attic',   240);
+  ('location', 1, 'Library',       160),
+  ('location', 1, 'Living Room',   170),
+  ('location', 1, 'Main Bathroom', 180),
+  ('location', 1, 'Main Bedroom',  190),
+  ('location', 1, 'Roof',          200),
+  ('location', 1, 'Septic Tank',   210),
+  ('location', 1, 'Space Bathroom', 220),
+  ('location', 1, 'Sunroom',       230),
+  ('location', 1, 'Yard',          240);
 
 -- Systems (§2.14). "Roofing" the category and "Roof" the location are not
 -- duplicates: the category answers what kind of problem, the location answers

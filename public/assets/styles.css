@@ -204,7 +204,12 @@ h2 { font-size: 1.1rem; font-weight: 600; margin: 26px 0 10px; color: var(--head
 
 /* ============ Fields ============ */
 
-.field { display: flex; flex-direction: column; gap: 6px; }
+/* margin-top rather than a gap on the parent: fields sit inside .row and
+   .stack as well as directly in a form, and only this reaches all three.
+   The first field in a group loses it, so a form does not start with a gap. */
+.field { display: flex; flex-direction: column; gap: 6px; margin-top: 22px; }
+.field:first-child, .row > .field { margin-top: 0; }
+.row { margin-top: 22px; }
 .field > span, .label { font-size: 0.95rem; font-weight: 400; color: var(--heading); }
 
 .field input, .field textarea, .field select, .input {
@@ -1495,3 +1500,176 @@ h2 { font-size: 1.1rem; font-weight: 600; margin: 26px 0 10px; color: var(--head
 @media (prefers-reduced-motion: reduce) {
   .queue-spinner { animation: none; }
 }
+
+/* ====================================================================
+   ROUND 2 — filter groups, the FAB, row links
+   ==================================================================== */
+
+/* ------------------------------------------------------- filter groups
+
+   Replaces the single horizontally-scrolling .filterbar on the list
+   screens. Two collapsible groups (Rooms, Systems) whose chips WRAP, so
+   you can see a whole vocabulary at once instead of swiping through it.
+
+   CAPPED AND SCROLLED INTERNALLY. Rooms has two dozen entries; without a
+   ceiling, opening it pushes the list itself off the first screen, which
+   defeats the point of filtering. */
+.filters { margin: 0 0 16px; }
+
+.filter-group {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.filter-group + .filter-group { margin-top: 8px; }
+
+.filter-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--tap);
+  padding: 0 14px;
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--heading);
+  cursor: pointer;
+  list-style: none;
+}
+.filter-head::-webkit-details-marker { display: none; }
+
+/* The disclosure caret, drawn rather than a glyph so it rotates smoothly
+   and matches at any font size. */
+.filter-head::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid var(--slate);
+  border-bottom: 2px solid var(--slate);
+  transform: rotate(-45deg);
+  transition: transform 0.15s;
+  flex: 0 0 auto;
+  margin-right: 2px;
+}
+.filter-group[open] > .filter-head::before { transform: rotate(45deg); }
+
+/* How many filters are on in THIS group. Only rendered when non-zero —
+   a "0" badge on every heading is noise that teaches you to ignore the
+   place where the real number appears. */
+.filter-count {
+  margin-left: auto;
+  min-width: 22px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-align: center;
+}
+
+.filter-body {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 12px 12px;
+  max-height: 38vh;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
+/* --------------------------------------------------------------- FAB
+
+   The floating add button, matching the Inspiration Gallery's .add-btn.
+   Replaces the full-width "Add a task" button that sat at the bottom of
+   the list and moved further away the more you had.
+
+   Clears the tab bar and the home indicator. z-index below .sheet and
+   .lightbox so it never floats over an open dialog. */
+.fab {
+  position: fixed;
+  right: 18px;
+  bottom: calc(var(--tap) + 18px + var(--safe-bottom));
+  width: 56px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.22);
+  cursor: pointer;
+  z-index: 40;
+  text-decoration: none;
+}
+.fab:hover, .fab:focus { background: var(--accent-dark); }
+.fab svg {
+  width: 26px;
+  height: 26px;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  fill: none;
+}
+
+/* The last row of a list needs clearance, or the FAB covers it. */
+.list:last-of-type, .cat-group:last-of-type { margin-bottom: 76px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .filter-head::before { transition: none; }
+}
+
+/* --------------------------------------------------- rows as links
+
+   A row's body is an <a>, and without this it inherits the browser's blue
+   underline — which reads as a web page from 1998 rather than as a list
+   you tap. The whole row is the target; the pencil is an affordance, not
+   a second link. */
+a.row-body,
+a.row-body:visited { color: var(--ink); text-decoration: none; }
+a.row-body:hover .row-text { color: var(--accent-dark); }
+a.row-body .row-sub { color: var(--slate); }
+
+/* The edit affordance. Not focusable and hidden from screen readers: it
+   is a picture of what the row already does, and a second tab stop that
+   goes exactly where the first one goes is noise in a keyboard walk. */
+.row-edit {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  color: var(--border);
+}
+.row-edit svg {
+  width: 17px;
+  height: 17px;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.list-row:hover .row-edit { color: var(--slate); }
+
+/* ------------------------------------------------------ section titles
+
+   "Coming up" and friends. .cat-head is the small uppercase label used
+   inside a section; this is the heading OF a section, and the two were
+   being asked to do the same job at different weights. */
+.section-title {
+  margin: 26px 0 12px;
+  padding-bottom: 8px;
+  border-bottom: 2px solid var(--accent);
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--heading);
+}
+.section-title:first-child { margin-top: 0; }
+
+/* The needs-action accordion is a block of its own, not another row in
+   the flow — it needs air under it before the timeline starts. */
+#needs-action { margin-bottom: 30px; }

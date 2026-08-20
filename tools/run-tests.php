@@ -165,12 +165,13 @@ $locations = $pdo->query(
     "SELECT name FROM tags WHERE kind='location' ORDER BY sort_order"
 )->fetchAll(PDO::FETCH_COLUMN);
 is_same($locations, array(
-    'Library', 'Dining Room', 'Entryway', 'Living Room', 'Emma Bathroom',
-    'Emma Room', 'Guest Room', 'Coat Closet', 'Main Bedroom', 'Main Bathroom',
-    'Sunroom', 'Breakfast Room', 'Kitchen', 'Space Bathroom', 'Laundry Room',
-    'Garage', 'Ext Studio', 'Yard', 'Roof', 'Septic Tank', 'Gutters',
-    'Chimney', 'Garage Attic', 'House Attic',
-), 'locations are in the authors order, spelled her way — "Ext Studio" is not expanded');
+    'Breakfast Room', 'Chimney', 'Coat Closet', 'Dining Room',
+    'Emma Bathroom', 'Emma Room', 'Entryway', 'Ext Studio', 'Garage',
+    'Garage Attic', 'Guest Room', 'Gutters', 'House Attic', 'Kitchen',
+    'Laundry Room', 'Library', 'Living Room', 'Main Bathroom',
+    'Main Bedroom', 'Roof', 'Septic Tank', 'Space Bathroom', 'Sunroom',
+    'Yard',
+), 'locations are alphabetical, spelled her way — "Ext Studio" is not expanded');
 
 /* Locations are property-scoped; systems and trades are not (§2.1). */
 is_same((int) $pdo->query(
@@ -1396,6 +1397,146 @@ foreach (array('public/index.php', 'public/cron.php', 'tools/cron-reminders.php'
         "build-deploy checks for $required before shipping");
 }
 ok(str_contains($deploySrc, 'component-test'), 'and keeps component-test.html out of the bundle');
+
+/* ================================================== Round 2 · UI revisions */
+
+section('Round 2 — chrome, filters, rows');
+
+/* THE HAMBURGER SHIPPED DEAD. page_menu() drew the button, menu.js exported
+ * attachMenu(), and nothing called it — on every screen, for the whole build.
+ * The old tests asserted menu_items() returned items but never that anything
+ * CONSUMED them, which is exactly the gap that let it through. These assert
+ * the wiring, not the ingredients. */
+
+ok(is_file($appRoot . '/public/assets/chrome.js'), 'chrome.js ships');
+ok(in_array('chrome.js', SHARED_MODULES, true), 'and is cache-busted by the import map');
+
+$layoutSrc = (string) file_get_contents($appRoot . '/lib/layout.php');
+ok(str_contains($layoutSrc, "asset('assets/chrome.js')"),
+    'page_foot() loads chrome.js itself, so no screen can forget to wire the menu');
+ok(str_contains($layoutSrc, 'id="menu-items"'),
+    'and emits menu_items() as JSON, keeping one source of truth');
+
+$chromeSrc = (string) file_get_contents($appRoot . '/public/assets/chrome.js');
+ok(str_contains($chromeSrc, 'attachMenu('),
+    'chrome.js actually CALLS attachMenu — the assertion that was missing');
+ok(str_contains($chromeSrc, "getElementById('menu-items')"),
+    'reading the items from the page rather than hardcoding a second list');
+
+/* Render a real screen and prove the three pieces arrive together. Structure
+ * checks on separate files cannot see that they meet. */
+ob_start();
+page_head('Test', 'issues');
+screen_head('Test', page_menu());
+page_foot('issues');
+$chrome = (string) ob_get_clean();
+
+ok(str_contains($chrome, 'id="app-menu"'), 'a rendered page has the hamburger button');
+ok(str_contains($chrome, 'id="menu-items"'), 'and the items payload');
+ok(str_contains($chrome, 'assets/chrome.js'), 'and the script that joins them');
+
+$payload = array();
+if (preg_match('/id="menu-items">(.*?)<\/script>/s', $chrome, $m)) {
+    $payload = json_decode($m[1], true) ?: array();
+}
+is_same(count($payload), count(menu_items()), 'the payload carries every menu item');
+ok(isset($payload[0]['label'], $payload[0]['href']), 'each with a label and an href');
+
+/* ---- filter groups ------------------------------------------------------ */
+
+$kitchen = tag_find(TAG_LOCATION, 'Kitchen');
+$library = tag_find(TAG_LOCATION, 'Library');
+$url = static fn(int $id): string => 'x.php?tag=' . $id;
+
+$none = render_filter_group('Rooms', tags_of_kind(TAG_LOCATION), array(), $url);
+ok(!str_contains($none, '<details class="filter-group" open'),
+    'a group with no active filter renders CLOSED');
+ok(!str_contains($none, 'filter-count'),
+    'and shows no count badge — a "0" on every heading is noise');
+
+$some = render_filter_group('Rooms', tags_of_kind(TAG_LOCATION), array($kitchen['id']), $url);
+ok(str_contains($some, '<details class="filter-group" open'),
+    'a group WITH an active filter renders open — a hidden filter narrowing your list is how you think data is lost');
+ok(str_contains($some, '<span class="filter-count">1</span>'), 'and counts it');
+
+/* Selected chips sort to the front so the one you want to turn off is under
+ * your thumb rather than somewhere down two dozen rooms. */
+preg_match_all('/>([^<]+)<\/a>/', $some, $chips);
+is_same($chips[1][0], 'Kitchen', 'the SELECTED chip sorts to the front of the group');
+
+$rest = array_slice($chips[1], 1);
+$sorted = $rest;
+usort($sorted, 'strcasecmp');
+is_same($rest, $sorted, 'and everything after it is alphabetical');
+
+$two = render_filter_group('Rooms', tags_of_kind(TAG_LOCATION), array($kitchen['id'], $library['id']), $url);
+preg_match_all('/>([^<]+)<\/a>/', $two, $twoChips);
+is_same(array_slice($twoChips[1], 0, 2), array('Kitchen', 'Library'),
+    'two selected chips both come first, alphabetically among themselves');
+
+is_same(render_filter_group('Empty', array(), array(), $url), '',
+    'a group with no tags renders nothing at all');
+
+/* The chips are LINKS. The filter state lives in the URL so it survives a
+ * reload and the back button steps through it. */
+ok(str_contains($some, '<a class="chip'), 'chips are links, not buttons');
+
+/* ---- rows and the FAB --------------------------------------------------- */
+
+$fab = render_fab('issue.php?new=1', 'Log an issue');
+ok(str_contains($fab, 'class="fab"') && str_contains($fab, 'aria-label="Log an issue"'),
+    'the FAB is a labelled link');
+
+$pencil = render_row_edit();
+ok(str_contains($pencil, 'aria-hidden="true"'),
+    'the row pencil is hidden from screen readers — the row is already a link to the same place');
+ok(!str_contains($pencil, '<a ') && !str_contains($pencil, 'tabindex'),
+    'and is not a second tab stop leading where the first one goes');
+
+/* Every list screen uses the FAB rather than a button that drifts down the
+ * page as the list grows. */
+foreach (array('issues.php', 'maintenance.php', 'vendors.php', 'history.php') as $screen) {
+    $src = (string) file_get_contents($appRoot . '/public/' . $screen);
+    ok(str_contains($src, 'render_fab('), "$screen uses the floating add button");
+    ok(!preg_match('/class="btn-primary" href="[a-z]+\.php\?new=1"/', $src),
+        "$screen no longer has the full-width add button");
+}
+
+/* Rows must not fall back to the browser's blue underline. */
+$css = (string) file_get_contents($appRoot . '/public/assets/styles.css');
+ok(str_contains($css, 'a.row-body'), 'a.row-body is styled, so rows are not blue and underlined');
+ok(str_contains($css, '.filter-body'), 'filter groups have a body style');
+ok((bool) preg_match('/\.filter-body\s*\{[^}]*max-height/s', $css),
+    'AND A MAX HEIGHT — two dozen rooms open would otherwise push the list off screen');
+ok((bool) preg_match('/\.filter-body\s*\{[^}]*overflow-y:\s*auto/s', $css),
+    'scrolling inside itself rather than growing');
+
+/* ---- alphabetical seed -------------------------------------------------- */
+
+/* Asserted against schema.sql itself, not against live state: the M1 section
+ * above deliberately reorders a tag to prove tags_reorder() works, so reading
+ * the database here would be testing that test's leftovers. */
+$seedSql = (string) file_get_contents($appRoot . '/schema.sql');
+preg_match_all("/\\('location', 1, '([^']+)',/", $seedSql, $seedNames);
+$seeded = $seedNames[1];
+$alpha  = $seeded;
+usort($alpha, 'strcasecmp');
+is_same($seeded, $alpha, 'the rooms are SEEDED alphabetically');
+is_same(count($seeded), 24, 'all 24 of them');
+
+/* And the tool restores it after any drift — including the drift the M1
+ * section just caused. */
+ok(is_file($appRoot . '/tools/sort-tags-alphabetically.php'),
+    'a tool exists to restore alphabetical order on an install seeded before the change');
+
+$live = tags_of_kind(TAG_LOCATION);
+usort($live, static fn(array $a, array $b): int => strcasecmp($a['name'], $b['name']));
+tags_reorder(array_column($live, 'id'));
+
+$after = array_column(tags_of_kind(TAG_LOCATION), 'name');
+$want  = $after;
+usort($want, 'strcasecmp');
+is_same($after, $want, 'and running it puts a reordered list back into alphabetical order');
 
 /* =================================================================== done */
 

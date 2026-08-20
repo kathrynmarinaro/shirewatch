@@ -41,7 +41,16 @@ foreach ($tasks as $task) {
     }
 }
 
-$filterTags = array_merge(tags_of_kind(TAG_LOCATION), tags_of_kind(TAG_CATEGORY));
+/** The same screen with Active/Paused flipped, keeping the tag filters on. */
+function maint_state_url(bool $paused): string
+{
+    $params = array();
+    $tags = array_values(array_filter(array_map('intval', (array) ($_GET['tag'] ?? array()))));
+    if ($tags !== array()) { $params['tag'] = $tags; }
+    if ($paused) { $params['paused'] = 1; }
+    $qs = http_build_query($params);
+    return 'maintenance.php' . ($qs === '' ? '' : '?' . $qs);
+}
 
 function maint_tag_url(int $tagId): string
 {
@@ -61,12 +70,15 @@ page_head('Maintenance', 'maintenance');
 screen_head('Maintenance', page_menu());
 ?>
 
-  <div class="filterbar" role="group" aria-label="Filter by room or system">
-    <?php foreach ($filterTags as $tag): ?>
-      <a class="chip<?= in_array($tag['id'], $tagIds, true) ? ' is-on' : '' ?><?= $tag['kind'] === TAG_LOCATION ? ' is-location' : '' ?>"
-         href="<?= h(maint_tag_url($tag['id'])) ?>"><?= h($tag['name']) ?></a>
-    <?php endforeach; ?>
+  <?php /* Active / Paused is a filter like any other now, rather than a link
+           at the bottom of the screen. Paused work is a real state you go
+           looking for, not a footnote. */ ?>
+  <div class="filterbar" role="group" aria-label="Active or paused">
+    <a class="chip<?= $showPaused ? '' : ' is-on' ?>" href="<?= h(maint_state_url(false)) ?>">Active</a>
+    <a class="chip<?= $showPaused ? ' is-on' : '' ?>" href="<?= h(maint_state_url(true)) ?>">Paused</a>
   </div>
+
+  <?= render_filters($tagIds, 'maint_tag_url') ?>
 
 <?php if ($tasks === array()): ?>
   <p class="empty">
@@ -109,6 +121,7 @@ screen_head('Maintenance', page_menu());
               <?= $names === array() ? '' : ' · ' . h(implode(' · ', $names)) ?>
             </span>
           </a>
+          <?= render_row_edit() ?>
         </div>
       </li>
     <?php endforeach; ?>
@@ -116,12 +129,7 @@ screen_head('Maintenance', page_menu());
   </section>
 <?php endforeach; ?>
 
-  <p class="row-between stack">
-    <a class="btn-primary" href="task.php?new=1">Add a task</a>
-    <a class="link-btn" href="<?= $showPaused ? 'maintenance.php' : 'maintenance.php?paused=1' ?>">
-      <?= $showPaused ? 'Back to active' : 'Show paused' ?>
-    </a>
-  </p>
+<?= render_fab('task.php?new=1', 'Add a task') ?>
 
 <script type="module" src="<?= asset('assets/maintenance.js') ?>"></script>
 <?php

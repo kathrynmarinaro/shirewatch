@@ -18,8 +18,7 @@ require_login_page();
 $search = trim((string) ($_GET['q'] ?? ''));
 $tagIds = array_values(array_filter(array_map('intval', (array) ($_GET['tag'] ?? array()))));
 
-$vendors  = vendors_list(array('search' => $search, 'tag_ids' => $tagIds));
-$workTags = tags_of_kind(TAG_WORK_TYPE);
+$vendors = vendors_list(array('search' => $search, 'tag_ids' => $tagIds));
 
 function vendors_tag_url(int $tagId): string
 {
@@ -44,11 +43,9 @@ screen_head('Vendors', page_menu());
     <button class="composer-add" type="submit">Find</button>
   </form>
 
-  <div class="filterbar" role="group" aria-label="Filter by trade">
-    <?php foreach ($workTags as $tag): ?>
-      <a class="chip<?= in_array($tag['id'], $tagIds, true) ? ' is-on' : '' ?>"
-         href="<?= h(vendors_tag_url($tag['id'])) ?>"><?= h($tag['name']) ?></a>
-    <?php endforeach; ?>
+  <?php /* One group, not two: a vendor carries trades and nothing else. */ ?>
+  <div class="filters">
+    <?= render_filter_group('Work types', tags_of_kind(TAG_WORK_TYPE), $tagIds, 'vendors_tag_url') ?>
   </div>
 
 <?php if ($vendors === array()): ?>
@@ -74,15 +71,14 @@ screen_head('Vendors', page_menu());
           </span>
         </a>
         <?= render_stars($vendor['rating']) ?>
+        <?= render_row_edit() ?>
       </div>
     </li>
   <?php endforeach; ?>
   </ul>
 <?php endif; ?>
 
-  <p class="stack">
-    <a class="btn-primary" href="vendor.php?new=1">Add a vendor</a>
-  </p>
+<?= render_fab('vendor.php?new=1', 'Add a vendor') ?>
 
 <script type="module" src="<?= asset('assets/vendors.js') ?>"></script>
 <?php

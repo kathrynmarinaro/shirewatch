@@ -76,6 +76,7 @@ screen_head(app_name(), page_menu());
                 </span>
               </a>
               <?= render_severity($issue['severity']) ?>
+              <?= render_row_edit() ?>
             </div>
           </li>
         <?php endforeach; ?>
@@ -118,7 +119,10 @@ screen_head(app_name(), page_menu());
 </details>
 
 <section class="stack">
-  <h2 class="cat-head">Coming up</h2>
+  <?php /* .section-title, not .cat-head: this is the heading OF a section
+           rather than a label inside one, and the two were being asked to do
+           the same job at different weights. */ ?>
+  <h2 class="section-title">Coming up</h2>
 
   <?php if ($first['rows'] === array()): ?>
     <p class="empty">Nothing scheduled ahead. Add a maintenance task or give an issue a check-back date.</p>

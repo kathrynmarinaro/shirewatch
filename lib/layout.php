@@ -68,7 +68,7 @@ function nav_tabs(): array
  * the feature modules actually import. */
 const SHARED_MODULES = array(
     'api.js', 'swipe.js', 'inline-edit.js', 'reorder.js', 'menu.js', 'tagfield.js',
-    'upload.js', 'lightbox.js',
+    'upload.js', 'lightbox.js', 'chrome.js',
 );
 
 /**
@@ -240,6 +240,23 @@ function screen_head(string $title, string $asideHtml = ''): void
 function page_foot(?string $tab = null): void
 {
     echo "</main>\n";
+
+    /* THE MENU IS WIRED HERE, NOT PER SCREEN.
+     *
+     * It shipped dead once already: page_menu() drew the button, menu.js
+     * exported attachMenu(), and nothing in between ever called it. Doing it
+     * in page_foot() means a screen cannot forget — there is nothing for it to
+     * remember.
+     *
+     * The items are emitted as JSON so menu_items() above stays the one
+     * source of truth. A <script type="application/json"> block is inert:
+     * the browser does not execute it, and json_encode escapes anything in a
+     * label that could close the tag. */
+    printf(
+        '<script type="application/json" id="menu-items">%s</script>' . "\n",
+        json_encode(menu_items(), JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP)
+    );
+    printf('<script type="module" src="%s"></script>' . "\n", asset('assets/chrome.js'));
     ?>
 <nav class="tabbar" aria-label="Sections">
 <?php foreach (nav_tabs() as $key => $t): ?>

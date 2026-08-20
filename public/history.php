@@ -120,6 +120,7 @@ screen_head('Service history', page_menu());
             </span>
           </a>
           <?= render_stars($record['rating'] === null ? null : (float) $record['rating']) ?>
+          <?= render_row_edit() ?>
         </div>
       </li>
     <?php endforeach; ?>
@@ -127,9 +128,7 @@ screen_head('Service history', page_menu());
   </section>
 <?php endforeach; ?>
 
-  <p class="stack">
-    <a class="btn-primary" href="record.php?new=1">Log some work</a>
-  </p>
+<?= render_fab('record.php?new=1', 'Log some work') ?>
 
 <script type="module" src="<?= asset('assets/history.js') ?>"></script>
 <?php

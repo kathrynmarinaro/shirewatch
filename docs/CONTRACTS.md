@@ -260,6 +260,27 @@ Foundation-owned and complete. Write markup against these; don't edit the file.
 | `.meta` (a `<dl>`) | label/value pairs on a detail screen |
 | `.filterbar` | horizontally scrolling chip row under a heading |
 | `.toast` / `.toast.is-visible` | transient statement. **Not** `.snackbar` — that one carries an Undo |
+| `.filters` / `.filter-group` / `.filter-head` / `.filter-count` / `.filter-body` | collapsible filter groups. **`.filter-body` is capped and scrolls internally** — two dozen rooms open would push the list off screen |
+| `.fab` | the floating add button. Clears the tab bar and the home indicator |
+| `.row-edit` | the pencil affordance at the right of a row. `aria-hidden`, never a second tab stop |
+| `.section-title` | the heading OF a section. `.cat-head` is a label INSIDE one |
+
+### Filter groups, the FAB and row pencils — use the renderers
+
+```php
+<?= render_filters($tagIds, 'my_tag_url') ?>          // Rooms + Systems
+<?= render_filter_group('Work types', $tags, $ids, 'my_url') ?>
+<?= render_fab('task.php?new=1', 'Add a task') ?>
+<?= render_row_edit() ?>
+```
+
+`render_filter_group()` **sorts selected chips to the front**, alphabetically
+within each half, and opens the group when it has an active filter. Chips are
+links, so filter state lives in the URL.
+
+**Rows are `<a class="row-body">`.** `a.row-body` is styled so they do not fall
+back to the browser's blue underline. The whole row is the target; the pencil
+is a picture of that, not a second link.
 
 ---
 
