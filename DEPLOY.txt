@@ -40,6 +40,15 @@ house.example.com that is:
    and never gets a chance to complain. If you see a bare 404 on a fresh
    upload, check this first.
 
+SUBFOLDER vs SUBDOMAIN — both work, and you do not have to configure
+anything. The top-level .htaccess deliberately sets NO RewriteBase, so
+Apache works out the base from where the file sits. It is correct at
+example.com/shirewatch/ and at shirewatch.example.com alike.
+
+  (Only if a host's detection is broken: uncomment the RewriteBase line
+  in .htaccess and set it to the URL path of the app folder, e.g.
+  "RewriteBase /shirewatch/". You will know because every page 404s.)
+
 BETTER, IF THE HOST EVER ALLOWS IT: point the document root directly at
 .../house/public. The private folders are then genuinely outside the served
 tree instead of being denied inside it, and the top-level .htaccess becomes

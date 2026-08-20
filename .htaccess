@@ -28,15 +28,37 @@ Options -Indexes
 
 <IfModule mod_rewrite.c>
   RewriteEngine On
-  RewriteBase /
 
-  # Send /public/... back to the clean URL so the app has ONE address.
+  # THERE IS DELIBERATELY NO RewriteBase HERE.
+  #
+  # An earlier version pinned "RewriteBase /", which is correct ONLY when the
+  # app is the document root — a subdomain pointed straight at this folder.
+  # Installed in a SUBFOLDER instead (public_html/shirewatch/, which is the
+  # usual Hostinger layout for a path like example.com/shirewatch), that line
+  # rewrites every request to /public/... instead of /shirewatch/public/...
+  # and the whole site is a 404 with nothing in any log to explain it, because
+  # Apache rewrites into a directory that isn't there and PHP never runs.
+  #
+  # Omitted, Apache infers the base from where this file actually sits, which
+  # is right in BOTH layouts. Every substitution below is relative so that
+  # inference is all that is needed.
+  #
+  # If your host's rewrite base detection is broken (rare), uncomment this and
+  # set it to the URL path of the folder holding this file, with both slashes:
+  #   RewriteBase /shirewatch/
+
+  # Send /…/public/… back to the clean URL so the app has ONE address.
   #
   # Matched on THE_REQUEST (the literal request line) because that is
   # untouched by internal rewrites — testing REQUEST_URI here would match
   # this rule's own output and loop.
-  RewriteCond %{THE_REQUEST} \s/+public/(\S*) [NC]
-  RewriteRule ^ /%1 [R=301,L]
+  #
+  # The optional non-greedy group is what makes it work at a subfolder as well
+  # as at a domain root: it swallows "shirewatch/" when there is one and
+  # nothing when there isn't. The substitution is RELATIVE, so the base gets
+  # put back on either way.
+  RewriteCond %{THE_REQUEST} \s/+(?:\S*?/)?public/(\S*) [NC]
+  RewriteRule ^ %1 [R=301,L]
 
   # Loop guard. In .htaccess the rewrite engine re-runs after an internal
   # rewrite, and REQUEST_URI still holds the ORIGINAL path on that pass —
