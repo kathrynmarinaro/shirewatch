@@ -20,7 +20,7 @@
  *
  * Deleting a tag lifts it off every item it was on, and there is no undo. "Are
  * you sure?" cannot tell you what you are about to lose; "Kitchen is on 6
- * issues and 2 tasks" can. One extra round trip, taken only when you have
+ * log entries and 2 tasks" can. One extra round trip, taken only when you have
  * actually tapped the bin.
  */
 
@@ -128,10 +128,18 @@ function confirmDelete(name, usage) {
 
     const parts = [];
     if (usage) {
-      const labels = { issue: 'entry', task: 'task', record: 'record', vendor: 'vendor' };
+      /* Spelled out rather than suffixed with "s": "log entrys" is what the
+         naive version says, and this string is the last thing somebody reads
+         before deleting a tag. */
+      const labels = {
+        entry:  ['log entry', 'log entries'],
+        task:   ['task', 'tasks'],
+        vendor: ['vendor', 'vendors'],
+      };
       Object.entries(usage).forEach(([key, count]) => {
-        if (count > 0) {
-          parts.push(`${count} ${labels[key]}${count === 1 ? '' : 's'}`);
+        const label = labels[key];
+        if (count > 0 && label) {
+          parts.push(`${count} ${count === 1 ? label[0] : label[1]}`);
         }
       });
     }

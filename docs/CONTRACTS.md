@@ -26,7 +26,7 @@ need to write a line of CSS, a date calculation, or a query against `tags` or
   complete (§5). **Do not add a `<style>` block and do not edit `styles.css`** —
   if you genuinely need a new component, report it.
 - **Use the shared JS modules** (§6). Import them; don't fork them.
-- **Fail soft.** An issue with an unknown tag renders without it. A photo still
+- **Fail soft.** A log entry with an unknown tag renders without it. A photo still
   in the queue renders as a placeholder that says so. A failed write shows a
   snackbar. One row degrades, never a screen.
 - **Comment the "why", not the "what."** Match the density in `lib/auth.php` and
@@ -45,9 +45,9 @@ need to write a line of CSS, a date calculation, or a query against `tags` or
 | **Foundation** (done) | `schema.sql`, `config.example.php`, `.htaccess` ×4, `.gitignore`, `lib/bootstrap.php`, `lib/db.php`, `lib/auth.php`, `lib/dates.php`, `lib/layout.php`, `lib/tags.php`, `lib/media.php`, `lib/imageproc.php`, `lib/mailer.php`, `lib/vendor/`, `public/login.php`, `public/logout.php`, `public/assets/styles.css`, `public/assets/{api,swipe,inline-edit,reorder,menu,tagfield}.js`, `data/starter-tasks.php`, `tools/{test-harness,run-tests,make-hash,build-deploy,seed,install-starter-tasks,hosting-check,send-test-email}.php`, `docs/CONTRACTS.md`, `CLAUDE.md` |
 | **M1 · Tags** *(done)* | `public/tags.php`, `public/api/tag-*.php`, `public/assets/tags.js`, `public/assets/tagfield.js` |
 | **M2 · Media** *(done)* | `public/api/upload.php`, `public/api/worker.php`, `public/api/media-*.php`, `cron/process-queue.php`, `public/assets/upload.js`, `public/assets/lightbox.js` |
-| **M3 · Issues** *(done)* | `public/issues.php`, `public/issue.php`, `lib/issues.php`, `lib/render.php`, `public/api/issue-*.php`, `public/assets/{issues,issue}.js` |
+| **M3 · The log** *(done)* | `public/log.php`, `public/entry.php`, `lib/log.php`, `lib/render.php`, `public/api/entry-*.php`, `public/assets/{log,entry}.js` |
 | **M4 · Maintenance** *(done)* | `public/maintenance.php`, `public/task.php`, `lib/tasks.php`, `public/api/task-*.php`, `public/assets/maintenance.js` |
-| **M5 · Service & vendors** *(done)* | `public/history.php`, `public/record.php`, `public/vendors.php`, `public/vendor.php`, `lib/records.php`, `lib/vendors.php`, `public/api/record-*.php`, `public/api/vendor-*.php`, `public/assets/{history,vendors}.js` |
+| **M5 · Service & vendors** *(done)* | `public/service.php`, `public/vendors.php`, `public/vendor.php`, `lib/service.php`, `lib/vendors.php`, `public/api/vendor-*.php`, `public/assets/vendors.js` |
 | **M6 · Dashboard & reminders** *(done)* | `public/index.php`, `public/cron.php`, `lib/dashboard.php`, `tools/cron-reminders.php`, `public/api/timeline.php`, `public/assets/dashboard.js` |
 | **M7 · Integration** *(done)* | `DEPLOY.txt`, `README.md`, `public/api/export.php`, `public/component-test.html` |
 
@@ -59,17 +59,22 @@ layer and the recurrence engine, which everything else stands on.
 
 ## 2. The database
 
-`schema.sql` is the contract — read it, it's commented. Fifteen tables:
+`schema.sql` is the contract — read it, it's commented. Thirteen tables:
 
-`properties` · `tags` · `issue_tags` · `task_tags` · `record_tags` ·
-`vendor_tags` · `issues` · `issue_updates` · `maintenance_tasks` ·
-`task_completions` · `task_reminder_sends` · `vendors` · `service_records` ·
-`media` · `login_attempts`
+`properties` · `tags` · `entry_tags` · `task_tags` · `vendor_tags` ·
+`log_entries` · `log_updates` · `maintenance_tasks` · `task_completions` ·
+`task_reminder_sends` · `vendors` · `media` · `login_attempts`
 
-### Nine things that will bite you if you miss them
+There is **no `service_records` table and there must not be one again.** A
+paid visit is either a `log_updates` row of kind `service` (something broke,
+you called somebody) or a `task_completions` row carrying a cost (scheduled
+maintenance somebody was paid for). `lib/service.php` is the only code allowed
+to know that both exist. See §8d.
+
+### Ten things that will bite you if you miss them
 
 1. **Every scheduling date is a stored `DATE` column, computed in PHP.**
-   `maintenance_tasks.next_due_on` and `issues.next_check_on`. There is no
+   `maintenance_tasks.next_due_on` and `log_entries.next_check_on`. There is no
    `DATE_ADD`, no `INTERVAL` and no `NOW()` in any query against them. This
    keeps the due queries sargable, keeps them identical on MySQL and on the
    SQLite the tests run against, and keeps one clock in one place. **A query
@@ -91,24 +96,35 @@ layer and the recurrence engine, which everything else stands on.
    name = ?` is the whole rename. Do not add a denormalized tag-name column
    anywhere.
 
-5. **`service_records.vendor_name` is a snapshot string and is the deliberate
-   exception to (4).** Written on insert, never kept in sync. Deleting a vendor
-   nulls `vendor_id` and the record still says who did the work.
+5. **`vendor_name` is a snapshot string and is the deliberate exception to
+   (4).** It appears on both `log_updates` and `task_completions`, written on
+   insert and never kept in sync. Deleting a vendor nulls `vendor_id` in both
+   places and the 2023 invoice still says who did the work.
 
 6. **`NULL` means unset, everywhere, and renders as nothing.**
-   `issues.severity`, `service_records.rating`, `service_records.cost`,
+   `log_entries.severity`, `log_updates.cost`, `log_updates.rating`,
+   `task_completions.cost`, `task_completions.rating`,
    `vendors.rating_override`. Zero is never a legal value for any of them.
-   A `NULL` cost is "not recorded", which is not the same as free.
+   A `NULL` cost is "not recorded", which is not the same as free — and
+   `service_total()` counts those rows rather than summing them as zero.
 
-7. **`media` has three owner columns and exactly one is set.** `issue_id`,
-   `issue_update_id`, `service_record_id`. Never write two.
+7. **`media` has three owner columns and exactly one is set.** `entry_id`,
+   `update_id`, `completion_id`. Never write two.
 
 8. **Tag names are stored exactly as typed.** No title-casing, no trimming
    beyond whitespace, no normalized lookup key. `Ext Studio` stays `Ext Studio`.
 
-9. **`issues.resolved_by_record_id` and `service_records.issue_id` point
-   opposite ways and are both correct.** The first is "this record fixed it";
-   the second is "this work relates to it". Three visits, one fix.
+9. **`log_entries.resolved_by_update_id` points at an update on the entry's
+   own timeline.** "This is what fixed it" — usually the service visit. It is
+   always optional: fix something yourself and the entry resolves with nothing
+   attached. Several visits can sit on one entry while only one of them
+   resolved it.
+
+10. **`log_updates.kind` is `note` or `service`, and the money columns are
+   only written for `service`.** A note carrying a vendor and a cost is a bug:
+   `entry_add_update()` ignores those fields unless the kind is `service`,
+   precisely so a client with stale inputs in the DOM cannot file a plumber's
+   invoice against an observation.
 
 ---
 
@@ -137,10 +153,10 @@ Every screen is:
 require_once __DIR__ . '/../lib/bootstrap.php';
 require_once __DIR__ . '/../lib/layout.php';
 require_login_page();
-page_head('Issues', 'issues');
+page_head('Log', 'log');
 screen_head('Issues', page_menu());
 // markup
-page_foot('issues');
+page_foot('log');
 ```
 
 Every JSON endpoint is:
@@ -252,7 +268,8 @@ Foundation-owned and complete. Write markup against these; don't edit the file.
 | `.chips` / `.chip` / `.chip.is-on` / `.chip.is-location` / `.chip.is-static` / `.chip-x` | tag chips, read-only and filtering |
 | `.tagfield` / `.tagfield-add` / `.sheet-group` | the tag picker |
 | `.timeline` / `.timeline-head` / `.timeline-item` / `.timeline-title` / `.timeline-sub` / `.timeline-more` | the dashboard's forward stream |
-| `.timeline-item.is-issue` | hollow node — an issue follow-up rather than a task |
+| `.timeline-item.is-entry` | hollow node — a log-entry check-back rather than a task |
+| `.timeline-item.is-service` | solid, darker node — a paid visit on an entry's own timeline |
 | `.timeline-item.is-projected` | dimmed — a **calculated** future occurrence, not a stored row |
 | `.action-count` / `.action-count.is-clear` / `.action-group` | the "needs action now" accordion |
 | `.gallery` / `.gallery.is-strip` / `.gallery-item` / `.gallery-date` | photo grids. `.is-pending` / `.is-failed` on an item render their own label |
@@ -331,7 +348,7 @@ are already written.
 | `media_for($ownerType, $id)` / `media_for_many($ownerType, $ids)` | reads. **Use the batched one on list screens** |
 | `media_delete($id)` | row and files |
 
-`$ownerType` is `'issue'`, `'issue_update'` or `'record'`. Anything else returns
+`$ownerType` is `'entry'`, `'update'` or `'completion'`. Anything else returns
 empty rather than throwing.
 
 **The upload response shape**, which M3 and M5 both consume:
@@ -347,7 +364,7 @@ A batch **never fails as a whole** because one file in it was wrong.
 
 | Endpoint | Takes | Notes |
 |---|---|---|
-| `POST api/upload.php` | multipart: `files[]`, `owner_type`, `owner_id` | **The owner row must already exist** — save the issue/record first, then attach photos. Returns `owner_not_found` otherwise |
+| `POST api/upload.php` | multipart: `files[]`, `owner_type`, `owner_id` | **The owner row must already exist** — save the entry or add the update first, then attach photos. Returns `owner_not_found` otherwise |
 | `POST api/worker.php` | — | drains `cfg('media.batch')` items. `{processed, remaining, results}` |
 | `POST api/media-delete.php` | `{id}` | row and files. No undo |
 | `POST api/media-caption.php` | `{id, caption}` | empty string stores `NULL` |
@@ -360,7 +377,7 @@ import { attachUpload }   from './upload.js';
 import { attachLightbox } from './lightbox.js';
 
 attachUpload('#add-photo', {
-  ownerType: 'issue_update', ownerId: 41,
+  ownerType: 'update', ownerId: 41,
   capture: 'single',                       // or 'batch'
   onDone: (created) => refreshGallery(),
   onProgress: (text) => setPill(text),     // null when finished
@@ -411,10 +428,10 @@ tables.**
 | `tag_rename($id, $name)` | one `UPDATE`; every tagged item follows. `false` on a collision |
 | `tag_delete($id)` | cascades off every item |
 | `tags_reorder($orderedIds)` | spaced by tens |
-| `tag_usage($id)` | `{issue, task, record, vendor}` counts, for a delete confirmation |
+| `tag_usage($id)` | `{entry, task, vendor}` counts, for a delete confirmation |
 | `tag_names($tags, $kind?)` | just the strings |
 
-`$type` is `'issue'`, `'task'`, `'record'` or `'vendor'`. `$kind` is
+`$type` is `'entry'`, `'task'` or `'vendor'`. `$kind` is
 `TAG_LOCATION`, `TAG_CATEGORY` or `TAG_WORK_TYPE`.
 
 ### The picker — `assets/tagfield.js`
@@ -424,7 +441,7 @@ is the form control; the chips are a rendering of its options. So the form
 posts correctly with JS off, and there is no parallel state to keep in sync.
 
 ```html
-<div class="tagfield" id="issue-tags">
+<div class="tagfield" id="entry-tags">
   <select multiple name="tags[]" class="sr-only">
     <option value="3" data-kind="location" selected>Kitchen</option>
     <option value="9" data-kind="category">Plumbing</option>
@@ -433,7 +450,7 @@ posts correctly with JS off, and there is no parallel state to keep in sync.
 ```
 
 ```js
-const field = attachTagField('#issue-tags', { onChange: (ids) => {} });
+const field = attachTagField('#entry-tags', { onChange: (ids) => {} });
 field.value();      // [3]
 field.set([3, 9]);
 field.detach();
@@ -452,36 +469,54 @@ one chip, not the whole form.
 
 ---
 
-## 8b. Issues — `lib/issues.php`, and `lib/render.php`
+## 8b. The log — `lib/log.php`, and `lib/render.php`
 
-**Nothing outside `lib/issues.php` writes SQL against `issues` or
-`issue_updates`.** The dashboard reads through `issues_needing_action()` and
-`issues_upcoming_checks()` so there is one definition of "needs attention".
+**Nothing outside `lib/log.php` writes SQL against `log_entries` or
+`log_updates`.** The dashboard reads through `entries_needing_action()` and
+`entries_upcoming_checks()` so there is one definition of "needs attention";
+the Service screen reads through `lib/service.php` for the same reason.
+
+A **log entry** is something about the house: a crack, a drip, a smell. Its
+**updates** are what happened to it, oldest first — either a `note` you
+observed or a `service` somebody was paid for. They share one timeline because
+they are one story.
 
 | Function | Does |
 |---|---|
-| `issues_list($filters)` | `status`, `tag_ids`, `search`. Rows come back decorated with `tags` and `cover` |
-| `issue_get($id)` / `issue_updates($id)` | one issue / its timeline, **oldest first** |
-| `issue_create($data)` / `issue_save($id, $data)` | header fields + `tag_ids` |
-| `issue_add_update($id, $data)` | one check-in. Returns the id photos attach to |
-| `issue_delete_update($id)` / `issue_delete($id)` | remove, files included |
-| `issue_set_status($id, $status, $recordId?)` | the record link is **always optional** |
-| `issue_trend($updates)` | `worse` · `better` · `stable` · `''` |
-| `issues_needing_action($today)` / `issues_upcoming_checks($after)` | the dashboard's two reads |
+| `entries_list($filters)` | `status`, `tag_ids`, `search`. Rows come back decorated with `tags` and `cover` |
+| `entry_get($id)` / `entry_updates($id)` | one entry / its timeline, **oldest first** |
+| `entry_create($data)` / `entry_save($id, $data)` | header fields + `tag_ids` |
+| `entry_add_update($id, $data)` | one update. Returns the id photos attach to |
+| `entry_delete_update($id)` / `entry_delete($id)` | remove, files included |
+| `entry_set_status($id, $status, $updateId?)` | the "what fixed it" link is **always optional** |
+| `entry_trend($updates)` | `worse` · `better` · `stable` · `''` |
+| `entries_needing_action($today)` / `entries_upcoming_checks($after)` | the dashboard's two reads |
 
-**`issue_recompute()` is the only writer of `severity`, `last_checked_on` and
+**`entry_add_update($id, ['kind' => 'service', …])`** additionally takes
+`vendor_id`, `vendor_name`, `cost` and `rating`. Those four are **read only
+when the kind is `service`** — sent alongside a note they are ignored, which is
+what stops a form with stale inputs filing an invoice against an observation.
+A `vendor_id` that resolves snapshots the vendor's name; otherwise a typed
+`vendor_name` is kept as-is, because plenty of work is done by somebody you
+will never call again.
+
+**A service update is still an update.** It moves `last_checked_on` and can
+re-rate `severity` exactly like a note does — getting something fixed *is*
+having looked at it.
+
+**`entry_recompute()` is the only writer of `severity`, `last_checked_on` and
 `next_check_on`.** Never set them yourself — every path that can change them
 already calls it. Three behaviours that follow, and that a later module must
 not break:
 
-- **A check-in with no severity does not wipe the rating.** "No change" is a
-  legitimate entry and is not a severity.
-- **A closed issue has `next_check_on = NULL`**, or a resolved crack sits on
+- **An update with no severity does not wipe the rating.** "No change" is a
+  legitimate update and is not a severity.
+- **A closed entry has `next_check_on = NULL`**, or a resolved crack sits on
   the dashboard forever.
-- **An issue with an interval and no check-ins is due from `noticed_on`**, so
+- **An entry with an interval and no updates is due from `noticed_on`**, so
   the one you logged and forgot still surfaces.
 
-**Tags AND rather than OR** in `issues_list()`. Kitchen + Plumbing means the
+**Tags AND rather than OR** in `entries_list()`. Kitchen + Plumbing means the
 kitchen plumbing problem, not everything in the kitchen plus everything
 plumbing.
 
@@ -543,34 +578,73 @@ which is the worst failure this app has.
 
 ---
 
-## 8d. Records and vendors — `lib/records.php`, `lib/vendors.php`
+## 8d. Service and vendors — `lib/service.php`, `lib/vendors.php`
+
+### Service is a VIEW, not a table
+
+There is no `service_records` table. Paid work happens in exactly two places:
+
+| | Where it lives | Why |
+|---|---|---|
+| **Unplanned** | a `log_updates` row of kind `service` | the AC stopped working and you called somebody. That visit is an event in the story of the thing that broke |
+| **Planned** | a `task_completions` row carrying a cost or a vendor | the annual HVAC service. It was never a problem, so filing it as a log entry would mean inventing one |
+
+Everywhere else in the app those stay apart, because they genuinely are
+different: one is a story, the other is a schedule. `lib/service.php` is the
+**one place** the question is "what did we pay, and to whom", and there the
+distinction stops mattering.
+
+**`lib/service.php` never writes.** Both sources are owned by `lib/log.php` and
+`lib/tasks.php`. A screen that queries `log_updates` or `task_completions`
+directly for money is a bug: the two halves drift and the total stops matching
+the rows above it.
 
 | Function | Does |
 |---|---|
-| `records_list($filters)` | `vendor_id`, `issue_id`, `task_id`, `year`, `tag_ids`, `search`. Decorated with tags and media |
-| `record_get($id)` / `record_save($id, $data)` / `record_delete($id)` | |
-| `records_years()` | years that have work in them |
+| `service_list($filters)` | `year`, `vendor_id`, `search`. Both sources, newest first, each row tagged `source` = `log` \| `maintenance` |
+| `service_row($row, $source)` / `service_title($row)` | shaping; the title is the note's first line, else the parent's title |
+| `service_years()` | years that have work in them |
+| `service_total($rows)` | `{total, priced, unpriced}` |
+| `service_clean_cost($raw)` | `''` → `NULL`, `'0'` → `'0.00'`, `'$1,285.50'` → `'1285.50'` |
+
+**A completion with neither a cost nor a vendor is not a service event.** You
+did it yourself; that belongs on the task's history, not in a list of what the
+house cost.
+
+**`service_total()` counts unpriced rows, it does not sum them as zero.** "Not
+recorded" is not "free", and a total that quietly treats them as nothing is a
+number you would trust and shouldn't.
+
+### Vendors — `lib/vendors.php`
+
+| Function | Does |
+|---|---|
 | `vendors_list($filters)` / `vendor_get($id)` | rating and job counts attached |
 | `vendor_save($id, $data)` / `vendor_delete($id)` | |
 | `vendor_rating($id)` / `vendor_ratings_for($ids)` | `{rating, average, rated_jobs, jobs, total_cost}` |
+| `vendor_clean($raw, $max)` / `vendor_clean_rating($raw)` | |
 
 **A vendor's rating is computed, never stored.** `rating` is what to show
 (override, else average); `average` is kept separately so a screen can print
-both. `COUNT(rating)` and `AVG(rating)` ignore NULLs — an unrated job is not a
+both. Unrated jobs are excluded from the average — an unrated job is not a
 zero.
 
-**`vendor_name` is snapshotted onto each record on write and never synced.**
-Deleting a vendor nulls `vendor_id` and leaves the string.
+**The two sources are summed, not averaged.** `vendor_ratings_for()` adds the
+counts and the rating-sums from both halves and divides once. Averaging the
+log's average against maintenance's average would give a vendor with one
+5-star repair and four 3-star services a 4.0 instead of the true 3.4.
 
-**`record_delete()` clears `issues.resolved_by_record_id` and
-`task_completions.service_record_id` itself.** Those columns have no foreign
-key — `resolved_by_record_id` would point forward at a table created later in
-`schema.sql`, and SQLite cannot add one by ALTER, so a database-enforced
-version would be absent from the tests. **Nothing outside `lib/records.php`
-may delete a `service_records` row.**
+**`vendor_name` is snapshotted on write in both places and never synced.**
+Deleting a vendor nulls `vendor_id` and leaves the string.
 
 **Cost: empty stores `NULL` ("not recorded"), a typed `0` stores `0.00`.**
 `render_cost(null)` is `''`; `render_cost('0.00')` is `$0.00`.
+
+**`log_entries.resolved_by_update_id` has no foreign key** — it points forward
+at a table created later in `schema.sql`, and SQLite cannot add one by ALTER,
+so a database-enforced version would be absent from the tests. A stale id
+renders as no link, which is a strictly better failure than refusing to
+resolve the entry.
 
 ---
 
@@ -613,8 +687,8 @@ identically-shaped index-backed range scans:
 SELECT next_due_on AS on_date, 'task' AS kind, id, title
   FROM maintenance_tasks WHERE is_active = 1 AND next_due_on > ?
 UNION ALL
-SELECT next_check_on, 'issue', id, title
-  FROM issues WHERE status IN ('watching','active') AND next_check_on > ?
+SELECT next_check_on, 'entry', id, title
+  FROM log_entries WHERE status IN ('watching','active') AND next_check_on > ?
 ORDER BY on_date, kind, id
 ```
 
@@ -628,12 +702,12 @@ using `recur_next_after()`, so the stream doesn't run dry after a month.
 Projected rows get `.is-projected` and are **not** stored.
 
 **Issue check-backs show only the next one.** A task genuinely recurs forever;
-an issue's next look-at depends on what you see when you look, so a chain of
+a log entry's next look-at depends on what you see when you look, so a chain of
 them would be invented schedule.
 
 ### Built — `lib/dashboard.php`
 
-`dashboard_now($today)` → `{issues, tasks, total}`, the two groups kept
+`dashboard_now($today)` → `{log, tasks, total}`, the two groups kept
 separate. `dashboard_timeline($afterDate, $afterKey, $limit)` →
 `{rows, cursor, done}`; `cursor` is `{date, key}` where key is `"kind:id"`.
 `GET api/timeline.php?after=&key=` serves one page. **The first page is

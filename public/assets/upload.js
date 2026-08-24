@@ -4,8 +4,8 @@
  * TWO CAPTURE SHAPES, ONE CODE PATH.
  * ---------------------------------------------------------------------------
  *
- *   capture: 'single'  the issue flow — snap and log in the moment
- *   capture: 'batch'   the service record flow — multi-select a pile of
+ *   capture: 'single'  the log flow — snap and log in the moment
+ *   capture: 'batch'   the receipts flow — multi-select a pile of
  *                      invoices and damage photos
  *
  * The only difference is the `multiple` and `capture` attributes on the input.

@@ -3,13 +3,14 @@
 **Read `docs/CONTRACTS.md` before writing any code.** It holds the
 file-ownership table that keeps the module passes from colliding, the full
 catalogue of CSS classes and JS module APIs the Foundation layer already built,
-and the nine schema facts that will bite you.
+and the ten schema facts that will bite you.
 `docs/DELEGATION-PLAN.md` has the reasoning behind every decision, if you need
 to know *why* rather than *what*.
 
 A house maintenance app: log a problem, photograph it, and watch over time
-whether it is stable or getting worse. Plus the scheduled maintenance you keep
-meaning to do, the record of what you paid whom, and who to call.
+whether it is stable or getting worse — including the visit that fixed it.
+Plus the scheduled maintenance you keep meaning to do, the record of what you
+paid whom, and who to call.
 
 One property, one person, one password — **architected so both of those can
 grow without a rebuild**, because this app is a candidate for public release.
@@ -115,9 +116,10 @@ Deliberate local divergences, all documented at their site:
   vendor does not rewrite history.** These look inconsistent and sit ten tables
   apart in `schema.sql`. Tags are a foreign key, so a rename is one `UPDATE` and
   everything follows — a room that gets renamed is the same room. But
-  `service_records.vendor_name` is a snapshot *string*, so deleting a vendor
-  nulls the link and the 2023 invoice still says who sent it. Different
-  questions, different answers. **Do not "make them consistent."**
+  `vendor_name` is a snapshot *string* on both `log_updates` and
+  `task_completions`, so deleting a vendor nulls the link and the 2023 invoice
+  still says who sent it. Different questions, different answers. **Do not
+  "make them consistent."**
 
 - **Tag names are stored exactly as typed.** `Ext Studio` is not expanded to
   `Exterior Studio`. These are the names the house is called by, and tidying
@@ -126,13 +128,14 @@ Deliberate local divergences, all documented at their site:
   verbatim, and it exists to fail loudly the day someone helpfully tidies one.
 
 - **`NULL` means unset and renders as *nothing*, everywhere.**
-  `issues.severity`, `service_records.rating`, `service_records.cost`,
-  `vendors.rating_override`. Zero is not a legal value for any of them. A
-  `NULL` cost is "not recorded", which is not the same as free, and rendering
-  unset severities as "Watch" would be a grey pill on every issue that looked
-  like data and wasn't.
+  `log_entries.severity`, the `rating` and `cost` on both `log_updates` and
+  `task_completions`, `vendors.rating_override`. Zero is not a legal value for
+  any of them. A `NULL` cost is "not recorded", which is not the same as free
+  — `service_total()` counts those rows separately rather than summing them as
+  zero — and rendering unset severities as "Watch" would be a grey pill on
+  every entry that looked like data and wasn't.
 
-- **`issues.next_check_on` is stored, not derived, and so is
+- **`log_entries.next_check_on` is stored, not derived, and so is
   `maintenance_tasks.next_due_on`.** Both look redundant beside the rule that
   produced them. They are what let the dashboard range-scan an index instead of
   evaluating `last_checked_on + INTERVAL check_interval_days DAY` per row —
@@ -151,7 +154,7 @@ Deliberate local divergences, all documented at their site:
 - **Uploading does no image work.** It saves the original, writes a `pending`
   row and returns; the browser drains the queue afterwards and a cron sweeps
   what a closed tab stranded. Resizing inline would be simpler and would put a
-  ten-file service-record batch 10–20 seconds into a request, which on shared
+  ten-file batch of receipts 10–20 seconds into a request, which on shared
   hosting is a live risk of `max_execution_time` and a half-uploaded batch with
   no error anyone can act on.
 
@@ -165,20 +168,43 @@ Deliberate local divergences, all documented at their site:
   a `rejected` list with a reason, beside the ones that worked.
 
 - **`media` has three nullable owner columns rather than a polymorphic
-  `owner_type` + `owner_id` pair.** Polymorphic ownership cannot be a foreign
-  key, so deleting an issue would leave its photos as rows pointing at nothing
-  and files nothing would ever reap. Two spare columns per row buys a real
-  `ON DELETE CASCADE`. The four tag join tables are four tables for the same
-  reason.
+  `owner_type` + `owner_id` pair.** `entry_id`, `update_id`, `completion_id`.
+  Polymorphic ownership cannot be a foreign key, so deleting a log entry would
+  leave its photos as rows pointing at nothing and files nothing would ever
+  reap. Two spare columns per row buys a real `ON DELETE CASCADE`. The three
+  tag join tables are three tables for the same reason.
 
-- **`issues.resolved_by_record_id` and `service_records.issue_id` point in
-  opposite directions and both belong.** The first is "this record is what
-  fixed it"; the second is "this work relates to this issue". Three visits can
-  reference one issue while only one of them resolved it. Linking is always
-  optional — fix something yourself and the issue resolves with nothing
-  attached.
+- **ISSUES AND SERVICE HISTORY ARE ONE THING.** They were two tables and two
+  screens, and they were the same event seen at two moments: a problem you have
+  not fixed yet, and a problem somebody was paid to fix. Now there is one:
 
-- **The dashboard combines issues and maintenance in the forward timeline but
+      Log tab  >  log entries  >  updates
+
+  An update is a `note` (something you observed) or a `service` (somebody was
+  paid), on one timeline, in the order it happened. **Do not re-grow a
+  `service_records` table.**
+
+- **A paid ROUTINE service is a maintenance completion that cost money, not a
+  log entry.** The annual HVAC visit was never a problem, so filing it in the
+  log would mean inventing a fault that never existed. `task_completions`
+  carries the same four money columns, and `task.php` has a form for them.
+
+- **"Service" is therefore a VIEW, not a table.** `lib/service.php` is the
+  *only* code allowed to know there are two sources; it unions them, and it
+  never writes. A screen that queries `log_updates` or `task_completions`
+  directly for money is a bug — the two halves drift and the total stops
+  matching the rows above it. Vendor ratings are **summed** across both
+  sources, never averaged as two averages.
+
+- **`log_entries.resolved_by_update_id` is optional and is not a foreign key.**
+  It names the update on the entry's own timeline that fixed it — usually the
+  service visit. Three visits can sit on one entry while only one of them
+  resolved it, and fixing something yourself resolves the entry with nothing
+  attached. There is no constraint because it points forward at a table
+  created later in `schema.sql` and SQLite cannot add one by `ALTER`; a stale
+  id renders as no link, which is a better failure than refusing to resolve.
+
+- **The dashboard combines the log and maintenance in the forward timeline but
   separates them in "needs action now".** The brief asked for them kept
   separate. That is honoured where it earns its place: deciding what to do this
   morning, "call a plumber" and "change a filter" are different kinds of thing.
@@ -225,7 +251,7 @@ Deliberate local divergences, all documented at their site:
 
 ## Out of scope for v1
 
-Budgeting and cost analytics across issues · smart-home integration · shared
+Budgeting and cost analytics across the log · smart-home integration · shared
 household access (schema-aware, not built) · a vendor database beyond the basic
 directory · offline mode · a service worker · push notifications · importing
 existing repair history.

@@ -35,7 +35,7 @@
  *   · A caller that just wants the values on submit needs no JS at all.
  *
  * GENERIC, like the other shared modules: it takes a root and knows nothing
- * about issues, tasks, records or vendors. */
+ate
 
 /** Accept a selector or an element, like every other module here. */
 function resolveRoot(root) {
@@ -85,14 +85,14 @@ function selectedOptions(select) {
 /**
  * Attach the picker to a root containing a <select multiple>.
  *
- *   <div class="tagfield" id="issue-tags">
+ *   <div class="tagfield" id="entry-tags">
  *     <select multiple name="tags[]" class="sr-only">
  *       <option value="3" data-kind="location" selected>Kitchen</option>
  *       …
  *     </select>
  *   </div>
  *
- *   const field = attachTagField('#issue-tags', {
+ *   const field = attachTagField('#entry-tags', {
  *     onChange: (ids) => saveDraft(ids),
  *   });
  *

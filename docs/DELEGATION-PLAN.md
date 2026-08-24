@@ -166,12 +166,21 @@ watching ──→ active ──→ resolved
 `active` is "this needs doing." `dismissed` is "watched it, it was nothing" —
 kept out of the list without pretending it was repaired.
 
-`issues.resolved_by_record_id` is **nullable and never required.** Fix a thing
+`resolved_by_record_id` is **nullable and never required.** Fix a thing
 yourself and the issue resolves with no record attached. Separately,
 `service_records.issue_id` links work to an issue — three visits can reference
 one issue while only one of them resolved it, which is why both columns exist.
 
+> **§2.15 merged issues and service records.** The four states survive
+> unchanged and so does the optional link, which is now
+> `log_entries.resolved_by_update_id` pointing at an update on the entry's own
+> timeline. `service_records.issue_id` is gone: a visit no longer *references*
+> an entry, it *is* one of that entry's updates.
+
 ### 2.6 Issues carry a check-back interval — **settled**
+
+*Read "log entry" for "issue" throughout §2.5–§2.7; §2.15 renamed the thing,
+not the design.*
 
 No longer veto-able: §2.13's timeline is built on "issue follow-ups", which is
 this column set. Cutting it now would empty half the stream.
@@ -369,10 +378,83 @@ answers *where*. A soffit issue is `Exterior` + `Roof`.
 
 ---
 
+### 2.15 Issues and Service History are one thing — **settled, and it revises §2.5 and §3**
+
+*Added after the app had been in use for a few weeks.*
+
+The brief asked for issues and a service history, and the build delivered two
+tables, two screens and two link columns between them. Then the author's AC
+stopped working, and she used the app for it:
+
+> They're the same thing, just sometimes I have it fixed (service) and other
+> times it's open and not fixed (issues).
+
+She is right, and the two-table shape had been quietly making that case
+expensive the whole time. One AC failure produced a log entry, a service record
+and a link — three rows for one event — and neither screen told the whole
+story. The Issues screen showed a problem with no sign that somebody had
+already been out; the History screen showed a visit with no sign of what it was
+for.
+
+**The merge.** One kind of thing, at three levels of naming, which the author
+chose in these words — *"I'd prefer thinking about adding an 'update to a log
+entry' rather than an 'entry to a log item'"*:
+
+    Log tab  >  log entries  >  updates
+
+An **update** carries a `kind`: `note` (something you observed) or `service`
+(somebody was paid). Both sit on one timeline in the order they happened, which
+is the point — "wider than the pencil mark now" and "Blue Ridge HVAC, $412,
+replaced the capacitor" are the same story.
+
+**Routine paid maintenance does not become a log entry.** The author's own
+correction, and a better model than the one I proposed:
+
+> Wouldn't that be maintenance? a paid maintenance moment would have a
+> 'service' tag to it
+
+Filing the annual HVAC service in the log would mean inventing a fault that
+never existed. So `task_completions` grew the same four money columns
+(`vendor_id`, `vendor_name`, `cost`, `rating`) and `task.php` grew a form
+behind a `<details>` — the one-tap "Mark done today" is still one tap, because
+most completions are you, in ten minutes.
+
+**"Service" is therefore a view, not a table.** `lib/service.php` unions the
+two sources and is the only file allowed to know they are two. Everywhere else
+they stay apart, because they genuinely are different — one is a story, the
+other is a schedule. The Service screen is the one place the question is "what
+did we pay, and to whom", and there the distinction stops mattering.
+
+Consequences worth naming:
+
+- **Vendor ratings are summed across both sources, not averaged as two
+  averages.** One 5-star repair and four 3-star services is 3.4, not 4.0.
+- **A completion with neither a cost nor a vendor is not a service event.** You
+  did it yourself; that belongs on the task, not in a list of what the house
+  cost.
+- **`service_total()` counts unpriced rows rather than summing them as zero.**
+  A total that quietly treats "not recorded" as "free" is a number you would
+  trust and shouldn't.
+- **`issues.resolved_by_record_id` became `log_entries.resolved_by_update_id`**
+  and now points at an update on the entry's own timeline. §2.5's rule survives
+  intact: linking is always optional, and several visits can sit on one entry
+  while only one of them resolved it.
+
+**There was live data**, so this shipped with `tools/migrate-to-log.php` rather
+than a fresh `schema.sql`. It folds every `service_record` into an update, a
+completion, or a new already-resolved entry, and **drops nothing until the
+before and after row counts agree** — the old tables are the safety net until
+the arithmetic proves they are not needed.
+
+---
+
 ## 3. Navigation — settled
 
-**Bottom tabs:** Dashboard · Issues · Maintenance · Vendors
-**Hamburger sheet:** Service History · **Rooms & Tags** · Export data · Log out
+*Revised by §2.15: the Issues tab is now the Log tab, and Service History is
+now Service.*
+
+**Bottom tabs:** Dashboard · Log · Maintenance · Vendors
+**Hamburger sheet:** Service · **Rooms & Tags** · Export data · Log out
 
 **Rooms & Tags** is the editing screen for the three seeded lists (§2.1, §2.12,
 §2.14) — rename, reorder, add, delete, per `kind`. It is in the sheet rather
@@ -384,9 +466,11 @@ solved "four daily jobs in the bar, everything you do once in the sheet." Four
 tabs is one more than any sibling ships and still comfortable at 48px on a
 phone; five would truncate labels.
 
-Service History lives in the sheet because it is almost always reached *from* an
-issue or a vendor rather than browsed — but it remains a real URL, so nothing in
-the menu is the only way to reach anything.
+Service lives in the sheet because it is almost always reached *from* a log
+entry or a vendor rather than browsed — but it remains a real URL, so nothing in
+the menu is the only way to reach anything. Keeping it out of the tab bar is
+also what makes the merge legible: the tab bar names the four things you *do*,
+and reviewing what the house cost is not one of them.
 
 ---
 
