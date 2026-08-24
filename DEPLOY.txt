@@ -1,14 +1,54 @@
 SHIREWATCH — DEPLOY CHECKLIST
 =============================
 
-House maintenance: issues watched over time, scheduled maintenance with
-email reminders, service history, vendors. PHP + MySQL, no build step.
+House maintenance: a log of things watched over time (with the visits that
+fixed them), scheduled maintenance with email reminders, a Service view over
+everything you paid for, and vendors. PHP + MySQL, no build step.
 
 Rebuild this bundle any time with:  php tools/build-deploy.php
 
 Written by the Foundation pass. Later passes should EXTEND it rather than
 replace it — every step below is one somebody has to do in a browser, in
 order, and the order is the useful part.
+
+
+UPGRADING AN INSTALL THAT ALREADY HAS DATA
+------------------------------------------
+Skip this whole section on a fresh install — schema.sql is already the new
+shape.
+
+This release merged Issues and Service History into one Log. Issues became
+log entries, service records became updates on them, and paid routine
+maintenance became a completion carrying a cost. Your data has to be moved
+across; uploading the files alone leaves the app pointed at tables that no
+longer match it.
+
+  1. EXPORT FIRST. Menu -> Export data, on the OLD version, before you
+     upload anything. This rewrites tables in place and there is no undo.
+
+  2. Upload the new files as usual (see below). Do NOT open the app yet.
+
+  3. Run the migration, dry first:
+
+         php tools/migrate-to-log.php --dry-run
+         php tools/migrate-to-log.php --confirm
+
+     On Hostinger, the cron panel's "run now" is the easiest way to run a
+     PHP file if you have no SSH. Point it at the same PHP binary the
+     reminder cron uses and append the flag.
+
+  4. Read what it prints. It counts every row before and after, and it
+     REFUSES to drop service_records unless every one of its rows is
+     accounted for somewhere. If it says the numbers do not add up, nothing
+     has been lost — the old tables are still there. Stop and send me the
+     output.
+
+  5. Open the app. The Log tab is where Issues was; Service moved into the
+     hamburger menu.
+
+Do NOT load schema.sql over an existing database. It creates the new tables
+empty, and your history would still be sitting in the old ones with nothing
+reading them.
 
 
 WHERE THE FILES GO
@@ -212,7 +252,7 @@ EXPORT AND RESTORE
 Menu -> Export data gives you a .zip containing:
 
     data.json             every table
-    service-records.csv   the money, openable in a spreadsheet
+    service.csv           the money, openable in a spreadsheet
     uploads/              every photo and document, at its real path
 
 To restore: load schema.sql into a fresh database, insert the rows from

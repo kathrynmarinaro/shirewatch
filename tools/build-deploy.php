@@ -70,6 +70,10 @@ const INCLUDE_DIRS = array('lib', 'tools', 'cron', 'data');
  *
  * config.php is the dangerous one: real credentials, and gitignored, so it is
  * exactly the file a naive tree copy picks up and a git-based check misses. */
+/* migrate-to-log.php is deliberately NOT here. It is the only path from the
+ * old two-table shape to the merged log, it is CLI-only, and it refuses to
+ * drop anything until its own row counts agree — so it has to travel with the
+ * files it migrates towards. */
 const SKIP_FILES = array(
     'config.php',
     'run-tests.php',
