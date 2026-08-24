@@ -1,5 +1,5 @@
 <?php
-/* The issue list — the app's front door for its original idea.
+/* The log — the app's front door for its original idea.
  *
  * SERVER-RENDERED, INCLUDING THE FILTERS. Every filter is a link with a query
  * string, so the state of the screen is in the URL: you can bookmark "urgent
@@ -24,7 +24,7 @@ $today = sw_today();
 /* ---- read the filters out of the URL ----------------------------------- */
 
 /* `status=all` is a distinct thing from no status at all: the default is the
- * two OPEN states, because a list that opens on four years of resolved issues
+ * two OPEN states, because a list that opens on four years of resolved entries
  * buries the three you can do something about. */
 $statusParam = (string) ($_GET['status'] ?? '');
 if ($statusParam === 'all') {
@@ -77,8 +77,8 @@ function log_tag_url(int $tagId): string
     return log_url(array('tag' => $next));
 }
 
-page_head('Issues', 'log');
-screen_head('Issues', page_menu());
+page_head('Log', 'log');
+screen_head('Log', page_menu());
 ?>
 
   <form class="composer" method="get" action="log.php">
@@ -89,7 +89,7 @@ screen_head('Issues', page_menu());
       <input type="hidden" name="status" value="<?= h($statusParam) ?>">
     <?php endif; ?>
     <input class="composer-input" type="search" name="q" value="<?= h($search) ?>"
-           placeholder="Search issues" autocomplete="off" aria-label="Search issues">
+           placeholder="Search the log" autocomplete="off" aria-label="Search the log">
     <button class="composer-add" type="submit">Find</button>
   </form>
 
@@ -137,7 +137,7 @@ screen_head('Issues', page_menu());
           </span>
         </a>
         <?php /* NULL severity renders NOTHING — not a grey pill, which would
-                 put something that looks like data on every issue where none
+                 put something that looks like data on every entry where none
                  was recorded (CLAUDE.md). */ ?>
         <?= render_severity($entry['severity']) ?>
         <?= render_row_edit() ?>

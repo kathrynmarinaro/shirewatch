@@ -5,8 +5,9 @@
  * TWO COMPONENTS, AND THEY TREAT THE BRIEF DIFFERENTLY ON PURPOSE.
  * ---------------------------------------------------------------------------
  *
- * NEEDS ACTION NOW is split into an issues group and a maintenance group. That
- * is the brief's "separate sections for issues vs. maintenance", honoured
+ * NEEDS ACTION NOW is split into a log group and a maintenance group. That
+ * is the brief's "separate sections for issues vs. maintenance" — issues being
+ * what the log holds — honoured
  * where it earns its place: deciding what to do this morning, "call a plumber"
  * and "change a filter" are different kinds of thing.
  *
@@ -125,7 +126,7 @@ screen_head(app_name(), page_menu());
   <h2 class="section-title">Coming up</h2>
 
   <?php if ($first['rows'] === array()): ?>
-    <p class="empty">Nothing scheduled ahead. Add a maintenance task or give an issue a check-back date.</p>
+    <p class="empty">Nothing scheduled ahead. Add a maintenance task or give a log entry a check-back date.</p>
   <?php else: ?>
     <ol class="timeline" id="timeline"
         data-cursor-date="<?= h($first['cursor']['date'] ?? '') ?>"

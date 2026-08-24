@@ -1,7 +1,7 @@
 <?php
-/* One issue: its header, its timeline, and the check-in form.
+/* One log entry: its header, its timeline, and the form that adds to it.
  *
- * Also the NEW-issue screen (?new=1) — the same form with nothing in it. One
+ * Also the NEW-entry screen (?new=1) — the same form with nothing in it. One
  * template for both, because a separate "add" screen is a second place to add
  * a field to and the second one always gets forgotten.
  *
@@ -9,8 +9,8 @@
  * THE CAPTURE FLOW IS: SAVE FIRST, THEN PHOTOS.
  * ---------------------------------------------------------------------------
  *
- * api/upload.php refuses an owner row that does not exist yet, so the issue
- * has to be created before a photo can attach to it. On a new issue the photo
+ * api/upload.php refuses an owner row that does not exist yet, so the entry
+ * has to be created before a photo can attach to it. On a new entry the photo
  * control is therefore disabled until the first save, and assets/log.js
  * enables it once it has an id. Fighting that — buffering files client-side
  * and posting them after — would mean holding several megabytes in a phone's
@@ -33,7 +33,7 @@ $id      = (int) ($_GET['id'] ?? 0);
 $entry   = $isNew ? null : entry_get($id);
 
 if (!$isNew && $entry === null) {
-    /* A deleted issue reached from a stale bookmark or the back button. Fail
+    /* A deleted entry reached from a stale bookmark or the back button. Fail
      * soft to the list rather than 404ing a screen the app itself linked to. */
     header('Location: log.php');
     exit;
@@ -41,15 +41,15 @@ if (!$isNew && $entry === null) {
 
 $updates    = $entry === null ? array() : entry_updates($entry['id']);
 $trend      = entry_trend($updates);
-$issueTags  = $entry === null ? array() : tags_for('entry', $entry['id']);
-$issuePhotos = $entry === null ? array() : media_for('entry', $entry['id']);
-$selected   = array_column($issueTags, 'id');
+$entryTags   = $entry === null ? array() : tags_for('entry', $entry['id']);
+$entryPhotos = $entry === null ? array() : media_for('entry', $entry['id']);
+$selected    = array_column($entryTags, 'id');
 
 $pickable = array_merge(tags_of_kind(TAG_LOCATION), tags_of_kind(TAG_CATEGORY));
 $vendors  = vendors_list();
 
 page_head($isNew ? 'New log entry' : $entry['title'], 'log');
-screen_head($isNew ? 'New log entry' : 'Issue', page_menu());
+screen_head($isNew ? 'New log entry' : 'Log entry', page_menu());
 ?>
 
 <form id="entry-form" data-id="<?= $entry === null ? '' : (int) $entry['id'] ?>">
@@ -78,7 +78,7 @@ screen_head($isNew ? 'New log entry' : 'Issue', page_menu());
       <span>Severity</span>
       <?php /* The empty option is FIRST and is the default. Severity is
                optional and NULL renders as nothing, so pre-selecting "Watch"
-               would silently rate every issue nobody rated. */ ?>
+               would silently rate every entry nobody rated. */ ?>
       <select class="input" name="severity">
         <option value="">Not set</option>
         <?php foreach (array(1, 2, 3, 4) as $level): ?>
@@ -93,7 +93,7 @@ screen_head($isNew ? 'New log entry' : 'Issue', page_menu());
 
   <label class="field">
     <span>Check back every</span>
-    <?php /* THE COLUMN THAT MAKES THE TIMELINE HAPPEN. An issue you log and
+    <?php /* THE COLUMN THAT MAKES THE TIMELINE HAPPEN. An entry you log and
              never revisit has one photo and no progression, and the premise of
              this app is the second photo. Blank is legal — not everything
              needs watching. */ ?>
@@ -148,10 +148,10 @@ screen_head($isNew ? 'New log entry' : 'Issue', page_menu());
     <?php endif; ?>
   </section>
 
-  <?php if ($issuePhotos !== array()): ?>
+  <?php if ($entryPhotos !== array()): ?>
   <section class="stack">
     <h2 class="cat-head">First photos</h2>
-    <?= render_gallery($issuePhotos, array('id' => 'entry-photos', 'date' => $entry['noticed_on'])) ?>
+    <?= render_gallery($entryPhotos, array('id' => 'entry-photos', 'date' => $entry['noticed_on'])) ?>
   </section>
   <?php endif; ?>
 

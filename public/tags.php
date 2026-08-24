@@ -85,7 +85,7 @@ screen_head('Rooms & Tags', page_menu());
 
   <p class="hint">
     Renaming one of these updates it everywhere it is already used — every
-    issue, task, record and vendor follows the new name. Deleting one removes
+    log entry, task and vendor follows the new name. Deleting one removes
     it from those items but never deletes the items themselves.
   </p>
 

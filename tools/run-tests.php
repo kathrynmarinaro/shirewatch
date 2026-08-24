@@ -1770,6 +1770,31 @@ ok(strpos($migrateSrc, 'DROP TABLE') > strpos($migrateSrc, 'NUMBERS DO NOT ADD U
 ok(str_contains($migrateSrc, 'service_records') && str_contains($migrateSrc, 'record_tags'),
     'both old tables are accounted for');
 
+/* THE HARNESS IS SQLITE AND THE MIGRATION IS MYSQL DDL, so it cannot be run
+ * here. It was run for real against a MariaDB copy of the old shape, and these
+ * are the three mistakes that run found — asserted at the source level so they
+ * cannot come back on the next edit. */
+
+ok(str_contains($migrateSrc, 'entry_tags CHANGE issue_id entry_id'),
+    'RENAMING A TABLE DOES NOT RENAME ITS COLUMNS — entry_tags.issue_id is renamed too');
+
+foreach (array('fk_updates_vendor', 'fk_completions_vendor', 'fk_media_completion') as $fk) {
+    ok(str_contains($migrateSrc, $fk),
+        "the migration adds $fk, so a migrated install behaves like a fresh one");
+}
+
+/* A rename and an ADD CONSTRAINT in the same ALTER makes MariaDB choose
+ * ALGORITHM=COPY and then refuse it. Each of those constraints therefore has
+ * to be its own statement. */
+foreach (array('fk_updates_vendor', 'fk_media_completion') as $fk) {
+    $stmt = strrpos(substr($migrateSrc, 0, strpos($migrateSrc, $fk)), 'ALTER TABLE');
+    ok($stmt !== false && !str_contains(substr($migrateSrc, $stmt, strpos($migrateSrc, $fk) - $stmt), 'CHANGE '),
+        "$fk is added in its own ALTER, not alongside a column rename");
+}
+
+ok(strpos($migrateSrc, "DROP COLUMN service_record_id") < strpos($migrateSrc, "DROP TABLE "),
+    'AND THE COLUMNS POINTING AT service_records GO FIRST — their foreign keys are what make it un-droppable');
+
 /* ---- the export still carries everything ------------------------------- */
 
 $exportSrc = (string) file_get_contents($appRoot . '/public/api/export.php');

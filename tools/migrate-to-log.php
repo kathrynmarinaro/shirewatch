@@ -74,6 +74,44 @@ function has_column(string $table, string $column): bool
     }
 }
 
+/**
+ * The foreign keys currently declared on a table.
+ *
+ * Read from information_schema rather than hardcoded, because an install that
+ * was set up before a constraint was renamed would have the old name and
+ * DROP FOREIGN KEY takes the name, not the columns.
+ *
+ * @return list<string>
+ */
+function constraints_on(string $table): array
+{
+    try {
+        return q(
+            'SELECT CONSTRAINT_NAME FROM information_schema.TABLE_CONSTRAINTS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?
+                AND CONSTRAINT_TYPE = ?',
+            array($table, 'FOREIGN KEY')
+        )->fetchAll(PDO::FETCH_COLUMN) ?: array();
+    } catch (Throwable $e) {
+        return array();
+    }
+}
+
+/** Does this foreign key constrain this column? */
+function fk_covers(string $table, string $constraint, string $column): bool
+{
+    try {
+        return q(
+            'SELECT 1 FROM information_schema.KEY_COLUMN_USAGE
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?
+                AND CONSTRAINT_NAME = ? AND COLUMN_NAME = ?',
+            array($table, $constraint, $column)
+        )->fetch() !== false;
+    } catch (Throwable $e) {
+        return false;
+    }
+}
+
 function count_rows(string $table): int
 {
     return has_table($table) ? (int) q('SELECT COUNT(*) FROM `' . $table . '`')->fetchColumn() : 0;
@@ -165,10 +203,29 @@ if (has_table('issue_tags') && !has_table('entry_tags')) {
 
 /* ---------------------------------------------------------------- columns */
 
+/* THE CONSTRAINTS MATTER AS MUCH AS THE COLUMNS. Adding vendor_id with an
+ * index but no foreign key leaves a database that looks migrated and behaves
+ * differently: deleting a vendor would leave a dangling id on every visit
+ * instead of nulling it, and the snapshotted name — the whole point of that
+ * column pair — would sit beside a link to a vendor that no longer exists.
+ * A fresh install gets these from schema.sql, so a migrated one has to be
+ * given them here or the two diverge silently. */
 printf("\nAdding columns\n");
 
-if (!$dryRun || has_table('log_updates')) {
-    if (!has_column('log_updates', 'kind')) {
+/* In a dry run the renames above have not happened, so asking about
+ * `log_updates` would answer "no such table" and this whole section would
+ * silently print nothing — which is the one thing a dry run must not do. Look
+ * at the table under whichever name it currently has instead. */
+$asks = static function (string $table) use ($dryRun): string {
+    if (!$dryRun) {
+        return $table;
+    }
+    $old = array('log_updates' => 'issue_updates', 'log_entries' => 'issues');
+    return isset($old[$table]) && has_table($old[$table]) ? $old[$table] : $table;
+};
+
+{
+    if (!has_column($asks('log_updates'), 'kind')) {
         step('log_updates: kind, vendor_id, vendor_name, cost, rating');
         run("ALTER TABLE log_updates
                CHANGE issue_id entry_id INT UNSIGNED NOT NULL,
@@ -179,12 +236,37 @@ if (!$dryRun || has_table('log_updates')) {
                ADD COLUMN rating TINYINT UNSIGNED NULL AFTER cost,
                ADD KEY idx_service (kind, noted_on),
                ADD KEY idx_vendor (vendor_id)", $dryRun);
+        /* A SEPARATE STATEMENT, and it has to be. MariaDB rejects an ALTER
+         * that both renames a foreign-key column and adds a constraint:
+         * renaming forces ALGORITHM=COPY, which it will not do while a
+         * foreign key names the column. The error says "Try ALGORITHM=INPLACE"
+         * and means "do these one at a time". */
+        run('ALTER TABLE log_updates
+               ADD CONSTRAINT fk_updates_vendor FOREIGN KEY (vendor_id)
+                   REFERENCES vendors (id) ON DELETE SET NULL', $dryRun);
     }
-    if (!has_column('log_entries', 'resolved_by_update_id')) {
+    if (!has_column($asks('log_entries'), 'resolved_by_update_id')) {
         step('log_entries: resolved_by_record_id -> resolved_by_update_id');
         run('ALTER TABLE log_entries
                CHANGE resolved_by_record_id resolved_by_update_id INT UNSIGNED NULL', $dryRun);
     }
+    /* RENAMING A TABLE DOES NOT RENAME ITS COLUMNS. entry_tags still calls its
+     * first column issue_id after the RENAME above, and every query in
+     * lib/tags.php asks for entry_id — so this is the difference between a
+     * migration that finishes and one that leaves every tag filter broken.
+     * The foreign key has to come off first: MariaDB refuses to rename a
+     * column an existing constraint names. */
+    if (has_table('entry_tags') && !has_column('entry_tags', 'entry_id')) {
+        step('entry_tags: issue_id -> entry_id');
+        foreach (constraints_on('entry_tags') as $fk) {
+            run('ALTER TABLE entry_tags DROP FOREIGN KEY `' . $fk . '`', $dryRun);
+        }
+        run('ALTER TABLE entry_tags CHANGE issue_id entry_id INT UNSIGNED NOT NULL', $dryRun);
+        run('ALTER TABLE entry_tags
+               ADD CONSTRAINT fk_et_entry FOREIGN KEY (entry_id) REFERENCES log_entries (id) ON DELETE CASCADE,
+               ADD CONSTRAINT fk_et_tag FOREIGN KEY (tag_id) REFERENCES tags (id) ON DELETE CASCADE', $dryRun);
+    }
+
     if (!has_column('task_completions', 'vendor_id')) {
         step('task_completions: vendor_id, vendor_name, cost, rating');
         run('ALTER TABLE task_completions
@@ -193,7 +275,9 @@ if (!$dryRun || has_table('log_updates')) {
                ADD COLUMN cost DECIMAL(10,2) NULL AFTER vendor_name,
                ADD COLUMN rating TINYINT UNSIGNED NULL AFTER cost,
                ADD KEY idx_paid (completed_on),
-               ADD KEY idx_vendor (vendor_id)', $dryRun);
+               ADD KEY idx_vendor (vendor_id),
+               ADD CONSTRAINT fk_completions_vendor FOREIGN KEY (vendor_id)
+                   REFERENCES vendors (id) ON DELETE SET NULL', $dryRun);
     }
     if (!has_column('media', 'entry_id')) {
         step('media: issue_id -> entry_id, issue_update_id -> update_id, + completion_id');
@@ -202,6 +286,9 @@ if (!$dryRun || has_table('log_updates')) {
                CHANGE issue_update_id update_id INT UNSIGNED NULL,
                ADD COLUMN completion_id INT UNSIGNED NULL AFTER update_id,
                ADD KEY idx_completion (completion_id)', $dryRun);
+        run('ALTER TABLE media
+               ADD CONSTRAINT fk_media_completion FOREIGN KEY (completion_id)
+                   REFERENCES task_completions (id) ON DELETE CASCADE', $dryRun);
     }
 }
 
@@ -357,20 +444,33 @@ if (!$ok) {
 step('everything accounted for');
 
 /* Only now. The old tables are the safety net until the count proves they are
- * no longer needed. */
+ * no longer needed.
+ *
+ * THE COLUMNS POINTING AT service_records GO FIRST. Their foreign keys are
+ * what makes the table un-droppable, and MySQL's error for that ("cannot
+ * delete a parent row") names neither the table nor the column, so a run that
+ * failed here would look like data corruption rather than an ordering
+ * mistake. */
+foreach (array('media', 'task_completions') as $table) {
+    if (has_column($table, 'service_record_id')) {
+        step($table . ': dropping service_record_id');
+        foreach (constraints_on($table) as $fk) {
+            /* Only the one naming service_record_id, so media keeps its own
+             * cascade to log_entries and log_updates. */
+            if (!fk_covers($table, $fk, 'service_record_id')) {
+                continue;
+            }
+            run('ALTER TABLE `' . $table . '` DROP FOREIGN KEY `' . $fk . '`', false);
+        }
+        run('ALTER TABLE `' . $table . '` DROP COLUMN service_record_id', false);
+    }
+}
+
 foreach (array('record_tags', 'service_records') as $dead) {
     if (has_table($dead)) {
         step('dropping ' . $dead);
         run('DROP TABLE ' . $dead, false);
     }
-}
-if (has_column('media', 'service_record_id')) {
-    step('media: dropping service_record_id');
-    run('ALTER TABLE media DROP COLUMN service_record_id', false);
-}
-if (has_column('task_completions', 'service_record_id')) {
-    step('task_completions: dropping service_record_id');
-    run('ALTER TABLE task_completions DROP COLUMN service_record_id', false);
 }
 
 printf("\nDone. Upload the new files, then load the app.\n");
