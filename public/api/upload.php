@@ -2,7 +2,7 @@
 /* POST /api/upload.php   multipart/form-data
  *
  *   files[]     one or more photos/documents
- *   owner_type  issue | issue_update | record
+ *   owner_type  entry | update | completion
  *   owner_id    the row they attach to
  *
  * → { "created":  [{ "id": 91, "name": "IMG_4021.HEIC" }],
@@ -16,7 +16,7 @@
  * before the first resize has started. The browser then drains the queue via
  * worker.php, and cron/process-queue.php sweeps whatever a closed tab left.
  *
- * Resizing here would put a ten-file service-record batch 10-20 seconds into a
+ * Resizing here would put a ten-file service batch 10-20 seconds into a
  * single request, which on shared hosting is a live risk of max_execution_time
  * — and the failure mode is a half-uploaded batch with no error anyone can act
  * on.
@@ -114,9 +114,9 @@ function upload_known_reasons(): array
 function upload_owner_exists(string $ownerType, int $ownerId): bool
 {
     $tables = array(
-        'issue'        => 'issues',
-        'issue_update' => 'issue_updates',
-        'record'       => 'service_records',
+        'entry'      => 'log_entries',
+        'update'     => 'log_updates',
+        'completion' => 'task_completions',
     );
     if (!isset($tables[$ownerType])) {
         return false;

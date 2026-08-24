@@ -1,19 +1,19 @@
 <?php
-/* POST /api/issue-delete.php   {id}  ->  {ok: true}
+/* POST /api/entry-delete.php   {id}  ->  {ok: true}
  *
- * Deletes the issue, its whole timeline, its tag links and every file behind
+ * Deletes the entry, its whole timeline, its tag links and every file behind
  * its photos.
  *
  * NO UNDO. Dismissing is what you want for "it turned out to be nothing" —
  * that keeps the record and the photos, which is usually the point. Deleting
- * is for the issue you logged twice by accident, and the screen says so before
+ * is for the entry you logged twice by accident, and the screen says so before
  * it asks.
  */
 
 declare(strict_types=1);
 
 require_once __DIR__ . '/../../lib/bootstrap.php';
-require_once __DIR__ . '/../../lib/issues.php';
+require_once __DIR__ . '/../../lib/log.php';
 
 require_login_api();
 require_same_origin();
@@ -24,7 +24,7 @@ if ($id <= 0) {
     json_error('bad_id', 400);
 }
 
-if (!issue_delete($id)) {
+if (!entry_delete($id)) {
     json_error('not_found', 404);
 }
 

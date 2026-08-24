@@ -5,7 +5,7 @@
  * NOTHING OUTSIDE THIS FILE WRITES SQL AGAINST tags OR THE FOUR JOIN TABLES.
  * ---------------------------------------------------------------------------
  *
- * Foundation owns this because every module touches tags — issues, tasks,
+ * Foundation owns this because every module touches tags — log entries, tasks,
  * records and vendors all carry them. Left to the modules there would be four
  * versions of the same "fetch the tags for these ids" query, and the first
  * schema change would fix three of them.
@@ -23,7 +23,7 @@
  * ---------------------------------------------------------------------------
  *
  * Everything links to tags.id and never to the text. So renaming "Emma Room"
- * is `UPDATE tags SET name = ?` and every issue, task and record already filed
+ * is `UPDATE tags SET name = ?` and every entry, task and vendor already filed
  * under it follows — nothing to migrate, and no window where some rows say one
  * thing and some say another.
  *
@@ -142,10 +142,12 @@ function tag_by_id(int $id): ?array
  */
 function tag_link_table(string $type): ?array
 {
+    /* THREE, not four. record_tags went with service_records: a service is an
+     * update on a log entry now, and it is the ENTRY that is in a room. Tagging
+     * an individual visit would have let one story claim two different rooms. */
     $map = array(
-        'issue'  => array('issue_tags',  'issue_id'),
+        'entry'  => array('entry_tags',  'entry_id'),
         'task'   => array('task_tags',   'task_id'),
-        'record' => array('record_tags', 'record_id'),
         'vendor' => array('vendor_tags', 'vendor_id'),
     );
     return $map[$type] ?? null;
@@ -166,7 +168,7 @@ function tags_for(string $type, int $itemId): array
  * Tags for MANY items at once, keyed by item id.
  *
  * THIS IS THE FUNCTION LIST SCREENS MUST USE. Calling tags_for() inside a loop
- * over forty issues is forty round trips, and it is the single easiest way to
+ * over forty entries is forty round trips, and it is the single easiest way to
  * make this app feel slow on a phone. Items with no tags are present in the
  * result with an empty array, so a caller can index into it without checking.
  *
@@ -434,15 +436,15 @@ function tags_reorder(array $orderedIds): void
  * How many items of each type carry this tag.
  *
  * For the delete confirmation on the Rooms & Tags screen: "Kitchen is on 6
- * issues and 2 tasks" is the difference between an informed delete and an
+ * log entries and 2 tasks" is the difference between an informed delete and an
  * undoable-looking one that quietly detaches six things.
  *
- * @return array{issue:int, task:int, record:int, vendor:int}
+ * @return array{entry:int, task:int, vendor:int}
  */
 function tag_usage(int $id): array
 {
     $out = array();
-    foreach (array('issue', 'task', 'record', 'vendor') as $type) {
+    foreach (array('entry', 'task', 'vendor') as $type) {
         list($table, $column) = tag_link_table($type);
         $out[$type] = (int) q("SELECT COUNT(*) FROM $table WHERE tag_id = ?", array($id))->fetchColumn();
     }

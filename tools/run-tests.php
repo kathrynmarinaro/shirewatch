@@ -60,10 +60,11 @@ require_once $appRoot . '/lib/dates.php';
 require_once $appRoot . '/lib/layout.php';
 require_once $appRoot . '/lib/tags.php';
 require_once $appRoot . '/lib/media.php';
-require_once $appRoot . '/lib/issues.php';
+require_once $appRoot . '/lib/log.php';
 require_once $appRoot . '/lib/render.php';
 require_once $appRoot . '/lib/tasks.php';
-require_once $appRoot . '/lib/records.php';
+require_once $appRoot . '/lib/vendors.php';
+require_once $appRoot . '/lib/service.php';
 require_once $appRoot . '/lib/dashboard.php';
 require_once $appRoot . '/tools/cron-reminders.php';
 
@@ -134,14 +135,21 @@ $tables = $pdo->query(
 )->fetchAll(PDO::FETCH_COLUMN);
 
 foreach (array(
-    'properties', 'tags', 'issues', 'issue_updates', 'issue_tags',
+    'properties', 'tags', 'log_entries', 'log_updates', 'entry_tags',
     'maintenance_tasks', 'task_completions', 'task_reminder_sends', 'task_tags',
-    'vendors', 'vendor_tags', 'service_records', 'record_tags',
-    'media', 'login_attempts',
+    'vendors', 'vendor_tags', 'media', 'login_attempts',
 ) as $table) {
     ok(in_array($table, $tables, true), "table $table exists");
 }
-is_same(count($tables), 15, 'exactly 15 tables, no strays');
+is_same(count($tables), 13, 'exactly 13 tables, no strays');
+
+/* THE MERGE REMOVED THESE, and their absence is the assertion. A leftover
+ * service_records table would still answer queries — with rows nothing writes
+ * any more — so the failure would be silently missing money rather than an
+ * error anyone could see. */
+foreach (array('issues', 'issue_updates', 'issue_tags', 'service_records', 'record_tags') as $gone) {
+    ok(!in_array($gone, $tables, true), "table $gone is gone, not orphaned");
+}
 
 /* ============================================================== seed data */
 
@@ -194,16 +202,20 @@ ok(!throws(static function (): void {
 }), 'the same name under a DIFFERENT kind is fine — the unique key is per kind');
 
 ok(throws(static function (): void {
-    q("INSERT INTO issues (title, status, noticed_on) VALUES ('x', 'closed', '2026-01-01')");
-}), 'an unknown issue status is rejected');
+    q("INSERT INTO log_entries (title, status, noticed_on) VALUES ('x', 'closed', '2026-01-01')");
+}), 'an unknown log entry status is rejected');
 
 ok(throws(static function (): void {
     q("INSERT INTO maintenance_tasks (title, recur_kind, next_due_on) VALUES ('x', 'weekly', '2026-01-01')");
 }), 'an unknown recur_kind is rejected');
 
 ok(throws(static function (): void {
-    q("INSERT INTO issue_updates (issue_id, noted_on) VALUES (99999, '2026-01-01')");
-}), 'an issue_update pointing at no issue is rejected');
+    q("INSERT INTO log_updates (entry_id, noted_on) VALUES (99999, '2026-01-01')");
+}), 'a log_update pointing at no entry is rejected');
+
+ok(throws(static function (): void {
+    q("INSERT INTO log_updates (entry_id, noted_on, kind) VALUES (1, '2026-01-01', 'invoice')");
+}), 'an update kind outside (note, service) is rejected');
 
 /* The send ledger's whole job (§2.3): one row per (task, due date), forever. */
 q("INSERT INTO maintenance_tasks (id, title, recur_kind, interval_count, interval_unit, next_due_on)
@@ -217,26 +229,27 @@ ok(throws(static function (): void {
 
 section('Deletes go the right way');
 
-q("INSERT INTO issues (id, title, status, noticed_on) VALUES (1, 'Basement crack', 'watching', '2026-01-05')");
-q("INSERT INTO issue_updates (id, issue_id, noted_on, note) VALUES (1, 1, '2026-03-05', 'wider')");
-q("INSERT INTO issue_tags (issue_id, tag_id) SELECT 1, id FROM tags WHERE kind='location' AND name='Kitchen'");
 q("INSERT INTO vendors (id, name) VALUES (1, 'Ace Plumbing')");
-q("INSERT INTO service_records (id, vendor_id, vendor_name, title, performed_on, issue_id)
-   VALUES (1, 1, 'Ace Plumbing', 'Sealed it', '2026-04-01', 1)");
+q("INSERT INTO log_entries (id, title, status, noticed_on) VALUES (1, 'Basement crack', 'watching', '2026-01-05')");
+q("INSERT INTO log_updates (id, entry_id, noted_on, note) VALUES (1, 1, '2026-03-05', 'wider')");
+q("INSERT INTO log_updates (id, entry_id, noted_on, kind, vendor_id, vendor_name, cost)
+   VALUES (2, 1, '2026-04-01', 'service', 1, 'Ace Plumbing', 480.00)");
+q("INSERT INTO entry_tags (entry_id, tag_id) SELECT 1, id FROM tags WHERE kind='location' AND name='Kitchen'");
 
-q('DELETE FROM issues WHERE id = 1');
-is_same((int) q('SELECT COUNT(*) FROM issue_updates WHERE issue_id = 1')->fetchColumn(), 0,
-    'deleting an issue takes its timeline with it');
-is_same((int) q('SELECT COUNT(*) FROM issue_tags WHERE issue_id = 1')->fetchColumn(), 0,
-    'deleting an issue takes its tag links with it');
-is_same((int) q('SELECT COUNT(*) FROM service_records WHERE id = 1')->fetchColumn(), 1,
-    'deleting an issue does NOT delete the service record that referenced it');
-
+/* A vendor's history no longer lives in a table of its own — it is the service
+ * updates scattered through the log. Deleting the vendor must not take those
+ * with it, and must not take their names either. */
 q('DELETE FROM vendors WHERE id = 1');
-$rec = q('SELECT vendor_id, vendor_name FROM service_records WHERE id = 1')->fetch();
-is_same($rec['vendor_id'], null, 'deleting a vendor nulls the link, it does not delete the record');
-is_same((string) $rec['vendor_name'], 'Ace Plumbing',
+$visit = q('SELECT vendor_id, vendor_name FROM log_updates WHERE id = 2')->fetch();
+is_same($visit['vendor_id'], null, 'deleting a vendor nulls the link, it does not delete the visit');
+is_same((string) $visit['vendor_name'], 'Ace Plumbing',
     'the snapshot name survives the vendor — a 2023 invoice still says who sent it');
+
+q('DELETE FROM log_entries WHERE id = 1');
+is_same((int) q('SELECT COUNT(*) FROM log_updates WHERE entry_id = 1')->fetchColumn(), 0,
+    'deleting an entry takes its whole timeline with it');
+is_same((int) q('SELECT COUNT(*) FROM entry_tags WHERE entry_id = 1')->fetchColumn(), 0,
+    'deleting an entry takes its tag links with it');
 
 /* ================================================================== tags */
 
@@ -249,23 +262,23 @@ is_same(count(tags_of_kind(TAG_LOCATION)), 24, 'tags_of_kind returns every locat
 is_same(count(tags_of_kind(TAG_CATEGORY)), 13, 'tags_of_kind returns categories (12 seeded + the one added above)');
 is_same(tags_of_kind('nonsense'), array(), 'an unknown kind returns nothing rather than throwing');
 
-q("INSERT INTO issues (id, title, status, noticed_on) VALUES (2, 'Drip', 'active', '2026-02-01')");
+q("INSERT INTO log_entries (id, title, status, noticed_on) VALUES (2, 'Drip', 'active', '2026-02-01')");
 $plumbing = tag_find(TAG_CATEGORY, 'Plumbing');
-$set = tags_set('issue', 2, array($kitchen['id'], $plumbing['id'], 999999));
+$set = tags_set('entry', 2, array($kitchen['id'], $plumbing['id'], 999999));
 is_same(count($set), 2, 'tags_set drops an id that does not exist rather than failing the save');
-is_same(count(tags_for('issue', 2)), 2, 'tags_for reads them back');
+is_same(count(tags_for('entry', 2)), 2, 'tags_for reads them back');
 
-$many = tags_for_many('issue', array(2, 12345));
+$many = tags_for_many('entry', array(2, 12345));
 is_same(count($many[2]), 2, 'tags_for_many keys results by item id');
 is_same($many[12345], array(), 'an item with no tags is present with an empty array, not absent');
 
-is_same(tags_set('issue', 2, array()), array(), 'tags_set with an empty list clears them');
-is_same(tags_for('issue', 2), array(), 'and the item really has none');
+is_same(tags_set('entry', 2, array()), array(), 'tags_set with an empty list clears them');
+is_same(tags_for('entry', 2), array(), 'and the item really has none');
 
 /* The rename behaviour the author asked for: the tag follows every item. */
-tags_set('issue', 2, array($kitchen['id']));
+tags_set('entry', 2, array($kitchen['id']));
 ok(tag_rename($kitchen['id'], 'The Kitchen'), 'tag_rename succeeds');
-$after = tags_for('issue', 2);
+$after = tags_for('entry', 2);
 is_same($after[0]['name'], 'The Kitchen',
     'RENAMING A ROOM FOLLOWS EVERY ITEM ALREADY TAGGED WITH IT');
 is_same($after[0]['id'], $kitchen['id'], 'and it is the same tag, not a new one');
@@ -275,7 +288,7 @@ ok(!tag_rename($kitchen['id'], 'Library'),
     'renaming onto a sibling name is refused — merging two tags is a different operation');
 
 $usage = tag_usage($kitchen['id']);
-is_same($usage['issue'], 1, 'tag_usage counts the issues carrying a tag');
+is_same($usage['entry'], 1, 'tag_usage counts the log entries carrying a tag');
 
 $newId = tag_add(TAG_LOCATION, '  Wine Cellar  ');
 ok($newId !== null, 'tag_add creates a tag');
@@ -371,8 +384,8 @@ is_same(app_name(), 'Shirewatch', 'app_name() reads the config value');
 is_same(cfg('db.charset'), 'utf8mb4', 'cfg() reads a dotted path');
 is_same(cfg('nope.nothing', 'fallback'), 'fallback', 'cfg() falls back');
 
-is_same(array_keys(nav_tabs()), array('dashboard', 'issues', 'maintenance', 'vendors'),
-    'four tabs, in the authors order');
+is_same(array_keys(nav_tabs()), array('dashboard', 'log', 'maintenance', 'vendors'),
+    'four tabs, in the author\'s order');
 ok(count(menu_items()) >= 4, 'the hamburger carries the once-in-a-while actions');
 
 /* The import map in layout.php exists to stop a stale cached ES module. If a
@@ -529,7 +542,7 @@ foreach (array('upload.js', 'lightbox.js') as $module) {
  * media_store() and the queue and checks that files appear on disk, because
  * the queue is the part with a race in it and structure tests cannot see one. */
 
-q("INSERT INTO issues (id, title, status, noticed_on) VALUES (900, 'Pipeline', 'watching', '2026-01-01')");
+q("INSERT INTO log_entries (id, title, status, noticed_on) VALUES (900, 'Pipeline', 'watching', '2026-01-01')");
 
 $tmpDir = sys_get_temp_dir() . '/sw-media-test-' . bin2hex(random_bytes(4));
 @mkdir($tmpDir, 0777, true);
@@ -557,7 +570,7 @@ if (!$madePhoto) {
     imageproc_ensure_dir('original');
     copy($photoPath, imageproc_upload_path('original', $slug, 'jpg'));
 
-    q("INSERT INTO media (kind, issue_id, slug, ext, original_path, original_filename, mime, bytes, status)
+    q("INSERT INTO media (kind, entry_id, slug, ext, original_path, original_filename, mime, bytes, status)
        VALUES ('photo', 900, ?, 'jpg', ?, 'test.jpg', 'image/jpeg', ?, 'pending')",
         array($slug, imageproc_relative_path('original', $slug, 'jpg'), filesize($photoPath)));
     $mediaId = (int) db()->lastInsertId();
@@ -584,11 +597,11 @@ if (!$madePhoto) {
     is_same(media_pending_count(), 0, 'and the queue is drained');
 
     /* Reads. */
-    $found = media_for('issue', 900);
+    $found = media_for('entry', 900);
     is_same(count($found), 1, 'media_for reads it back');
     is_same($found[0]['status'], 'ready', 'with its status');
 
-    $many = media_for_many('issue', array(900, 87654));
+    $many = media_for_many('entry', array(900, 87654));
     is_same(count($many[900]), 1, 'media_for_many keys by owner');
     is_same($many[87654], array(), 'an owner with nothing is present with an empty array');
 
@@ -599,16 +612,16 @@ if (!$madePhoto) {
     ok(!is_file($thumbAbs), 'and the thumb file');
     ok(!is_file($origAbs), 'and the original — nothing else would ever reap it');
 
-    /* Cascade: an issue taking its photos with it is what the three nullable
+    /* Cascade: an entry taking its photos with it is what the three nullable
      * owner columns bought instead of a polymorphic pair. */
     $slug2 = imageproc_new_slug();
     copy($photoPath, imageproc_upload_path('original', $slug2, 'jpg'));
-    q("INSERT INTO media (kind, issue_id, slug, ext, original_path, status)
+    q("INSERT INTO media (kind, entry_id, slug, ext, original_path, status)
        VALUES ('photo', 900, ?, 'jpg', ?, 'ready')",
         array($slug2, imageproc_relative_path('original', $slug2, 'jpg')));
-    q('DELETE FROM issues WHERE id = 900');
-    is_same((int) q('SELECT COUNT(*) FROM media WHERE issue_id = 900')->fetchColumn(), 0,
-        'deleting an issue cascades its media rows away');
+    q('DELETE FROM log_entries WHERE id = 900');
+    is_same((int) q('SELECT COUNT(*) FROM media WHERE entry_id = 900')->fetchColumn(), 0,
+        'deleting an entry cascades its media rows away');
     @unlink(imageproc_upload_path('original', $slug2, 'jpg'));
 }
 
@@ -622,7 +635,7 @@ is_same(media_sniff_document($tmpDir . '/not.pdf'), null,
     'a text file named .pdf is refused — the name is never trusted');
 is_same(imageproc_sniff($tmpDir . '/not.pdf'), null, 'and it is not an image either');
 
-is_same(media_owner_column('issue'), 'issue_id', 'owner types map to columns');
+is_same(media_owner_column('entry'), 'entry_id', 'owner types map to columns');
 is_same(media_owner_column('nonsense'), null, 'an unknown owner type returns null, never a column name');
 
 /* A client filename never becomes a path. */
@@ -632,22 +645,34 @@ is_same(media_display_name(''), 'file', 'an empty name gets a placeholder');
 array_map('unlink', glob($tmpDir . '/*') ?: array());
 @rmdir($tmpDir);
 
-/* ============================================================ M3 · issues */
+/* ======================================================= M3 · the log */
 
-section('M3 — Issues and timelines');
+section('M3 — Log entries and timelines');
 
 foreach (array(
-    'lib/issues.php', 'lib/render.php',
-    'public/issues.php', 'public/issue.php',
-    'public/assets/issues.js', 'public/assets/issue.js',
-    'public/api/issue-save.php', 'public/api/issue-update.php',
-    'public/api/issue-update-delete.php', 'public/api/issue-status.php',
-    'public/api/issue-delete.php',
+    'lib/log.php', 'lib/render.php',
+    'public/log.php', 'public/entry.php',
+    'public/assets/log.js', 'public/assets/entry.js',
+    'public/api/entry-save.php', 'public/api/entry-update.php',
+    'public/api/entry-update-delete.php', 'public/api/entry-status.php',
+    'public/api/entry-delete.php',
 ) as $file) {
     ok(is_file($appRoot . '/' . $file), "M3 ships $file");
 }
 
-foreach (glob($appRoot . '/public/api/issue-*.php') as $endpoint) {
+/* THE MERGE DELETED THESE. Left behind, they would still load and still work
+ * against tables that no longer exist — a 500 on a screen the menu still links
+ * to. */
+foreach (array(
+    'lib/issues.php', 'lib/records.php',
+    'public/issues.php', 'public/issue.php', 'public/history.php', 'public/record.php',
+    'public/assets/issues.js', 'public/assets/issue.js', 'public/assets/history.js',
+    'public/api/issue-save.php', 'public/api/record-save.php',
+) as $file) {
+    ok(!is_file($appRoot . '/' . $file), "the merge removed $file");
+}
+
+foreach (glob($appRoot . '/public/api/entry-*.php') as $endpoint) {
     $src  = (string) file_get_contents($endpoint);
     $name = basename($endpoint);
     ok(str_contains($src, 'require_login_api()') && str_contains($src, 'require_same_origin()'),
@@ -659,116 +684,179 @@ foreach (glob($appRoot . '/public/api/issue-*.php') as $endpoint) {
 $kitchen  = tag_find(TAG_LOCATION, 'Kitchen');
 $plumbing = tag_find(TAG_CATEGORY, 'Plumbing');
 
-$id = issue_create(array(
+$id = entry_create(array(
     'title'               => 'Drip under the sink',
     'description'         => 'Only when the dishwasher runs.',
     'noticed_on'          => '2026-01-10',
     'check_interval_days' => 30,
     'tag_ids'             => array($kitchen['id'], $plumbing['id']),
 ));
-ok($id > 0, 'issue_create returns an id');
+ok($id > 0, 'entry_create returns an id');
 
-$issue = issue_get($id);
-is_same($issue['status'], 'watching', 'a new issue starts as watching');
-is_same($issue['severity'], null, 'severity is unset unless given — never defaulted to 1');
+$entry = entry_get($id);
+is_same($entry['status'], 'watching', 'a new entry starts as watching');
+is_same($entry['severity'], null, 'severity is unset unless given — never defaulted to 1');
 
-/* An issue with an interval and no check-ins is due from the day it was
+/* An entry with an interval and no updates is due from the day it was
  * NOTICED. Otherwise it would never surface until somebody checked it once,
  * which is precisely the thing you would forget to do. */
-is_same($issue['next_check_on'], '2026-02-09',
-    'a never-checked issue is still due, counted from when it was noticed');
-is_same($issue['last_checked_on'], null, 'and has no last-checked date');
+is_same($entry['next_check_on'], '2026-02-09',
+    'a never-checked entry is still due, counted from when it was noticed');
+is_same($entry['last_checked_on'], null, 'and has no last-checked date');
 
-is_same(count(tags_for('issue', $id)), 2, 'tags are attached on create');
+is_same(count(tags_for('entry', $id)), 2, 'tags are attached on create');
 
 /* ---- the timeline drives the derived columns --------------------------- */
 
-issue_add_update($id, array('noted_on' => '2026-02-01', 'note' => 'Same as before', 'severity' => 2));
-$issue = issue_get($id);
-is_same($issue['severity'], 2, 'a check-in with a severity sets the issue severity');
-is_same($issue['last_checked_on'], '2026-02-01', 'and the last-checked date');
-is_same($issue['next_check_on'], '2026-03-03', 'and moves the next check forward from it');
+entry_add_update($id, array('noted_on' => '2026-02-01', 'note' => 'Same as before', 'severity' => 2));
+$entry = entry_get($id);
+is_same($entry['severity'], 2, 'an update with a severity sets the entry severity');
+is_same($entry['last_checked_on'], '2026-02-01', 'and the last-checked date');
+is_same($entry['next_check_on'], '2026-03-03', 'and moves the next check forward from it');
 
 /* A later note that does NOT re-rate must not wipe the rating. This is the
- * subtle one: "no change" is a legitimate check-in and it is not a severity. */
-issue_add_update($id, array('noted_on' => '2026-03-05', 'note' => 'No change'));
-$issue = issue_get($id);
-is_same($issue['severity'], 2, 'a check-in with NO severity leaves the rating alone');
-is_same($issue['last_checked_on'], '2026-03-05', 'but still moves the last-checked date');
+ * subtle one: "no change" is a legitimate update and it is not a severity. */
+entry_add_update($id, array('noted_on' => '2026-03-05', 'note' => 'No change'));
+$entry = entry_get($id);
+is_same($entry['severity'], 2, 'an update with NO severity leaves the rating alone');
+is_same($entry['last_checked_on'], '2026-03-05', 'but still moves the last-checked date');
 
-issue_add_update($id, array('noted_on' => '2026-04-02', 'note' => 'Worse', 'severity' => 3));
-is_same(issue_get($id)['severity'], 3, 'a later rating overrides an earlier one');
+entry_add_update($id, array('noted_on' => '2026-04-02', 'note' => 'Worse', 'severity' => 3));
+is_same(entry_get($id)['severity'], 3, 'a later rating overrides an earlier one');
+
+/* ---- a SERVICE update, which is the whole point of the merge ------------ */
+
+$acme = vendor_save(null, array('name' => 'Acme Plumbing', 'phone' => '555-0100'));
+
+$visit = entry_add_update($id, array(
+    'kind'      => 'service',
+    'noted_on'  => '2026-04-20',
+    'note'      => "Replaced the trap.",
+    'severity'  => 1,
+    'vendor_id' => $acme,
+    'cost'      => '412.50',
+    'rating'    => 4,
+));
+$rows = entry_updates($id);
+$last = $rows[count($rows) - 1];
+is_same($last['kind'], 'service', 'a service update is stored on the entry timeline, not elsewhere');
+is_same($last['vendor_name'], 'Acme Plumbing',
+    'THE VENDOR NAME IS SNAPSHOTTED at write time, so deleting the vendor keeps the invoice readable');
+is_same((float) $last['cost'], 412.5, 'the cost rides on the update');
+is_same($last['rating'], 4, 'and so does the rating');
+
+/* A service update is still an update: it moves the derived columns exactly
+ * like a note does. Getting it fixed IS a check-in. */
+is_same(entry_get($id)['last_checked_on'], '2026-04-20',
+    'a service visit counts as having looked at it');
+is_same(entry_get($id)['severity'], 1, 'and re-rates the entry like any other update');
+
+/* The money fields are IGNORED on a note. Sending them anyway must not file an
+ * invoice against an observation. */
+$noteId = entry_add_update($id, array(
+    'kind' => 'note', 'noted_on' => '2026-04-25', 'note' => 'Dry',
+    'vendor_id' => $acme, 'cost' => '99.99', 'rating' => 5,
+));
+$noteRow = q('SELECT kind, vendor_id, vendor_name, cost, rating FROM log_updates WHERE id = ?',
+    array($noteId))->fetch();
+is_same($noteRow['kind'], 'note', 'the kind is what was asked for');
+is_same($noteRow['vendor_id'], null, 'a note carries no vendor');
+is_same($noteRow['cost'], null, 'no cost');
+is_same($noteRow['rating'], null, 'and no rating, whatever the payload contained');
+
+/* An unknown kind is a note, not an error. Fail soft: the observation is worth
+ * more than the label on it. */
+$oddId = entry_add_update($id, array('kind' => 'invoice', 'noted_on' => '2026-04-26'));
+is_same(q('SELECT kind FROM log_updates WHERE id = ?', array($oddId))->fetch()['kind'], 'note',
+    'an unrecognised kind degrades to a note rather than throwing');
+
+/* A vendor nobody has in the directory is still a name worth keeping. */
+$oneOff = entry_add_update($id, array(
+    'kind' => 'service', 'noted_on' => '2026-04-27',
+    'vendor_name' => "  Bob's brother-in-law  ", 'cost' => '',
+));
+$oneOffRow = q('SELECT vendor_id, vendor_name, cost FROM log_updates WHERE id = ?',
+    array($oneOff))->fetch();
+is_same($oneOffRow['vendor_id'], null, 'a typed name creates no vendor row');
+is_same($oneOffRow['vendor_name'], "Bob's brother-in-law", 'but the name is kept, trimmed');
+is_same($oneOffRow['cost'], null, 'AN EMPTY COST IS NULL — "not recorded" is not "free"');
+
+/* Cleaning it up, so the sections below count what they expect to. */
+entry_delete_update($oddId);
+entry_delete_update($oneOff);
+entry_delete_update($noteId);
+entry_delete_update($visit);
 
 /* ---- trend ------------------------------------------------------------- */
 
-is_same(issue_trend(issue_updates($id)), 'worse', 'two ratings going up read as worse');
+is_same(entry_trend(entry_updates($id)), 'worse', 'two ratings going up read as worse');
 
-$flat = issue_create(array('title' => 'Flat', 'noticed_on' => '2026-01-01'));
-issue_add_update($flat, array('noted_on' => '2026-02-01', 'severity' => 2));
-issue_add_update($flat, array('noted_on' => '2026-03-01', 'severity' => 2));
-is_same(issue_trend(issue_updates($flat)), 'stable', 'the same rating twice reads as stable');
+$flat = entry_create(array('title' => 'Flat', 'noticed_on' => '2026-01-01'));
+entry_add_update($flat, array('noted_on' => '2026-02-01', 'severity' => 2));
+entry_add_update($flat, array('noted_on' => '2026-03-01', 'severity' => 2));
+is_same(entry_trend(entry_updates($flat)), 'stable', 'the same rating twice reads as stable');
 
 /* THE COMMON CASE, and it is not a failure: severity is optional, so most
  * timelines carry none and there is no trend to report. Printing "stable"
  * there would be inventing a judgement nobody made. */
-$unrated = issue_create(array('title' => 'Unrated', 'noticed_on' => '2026-01-01'));
-issue_add_update($unrated, array('noted_on' => '2026-02-01', 'note' => 'Looked at it'));
-issue_add_update($unrated, array('noted_on' => '2026-03-01', 'note' => 'Still there'));
-is_same(issue_trend(issue_updates($unrated)), '',
+$unrated = entry_create(array('title' => 'Unrated', 'noticed_on' => '2026-01-01'));
+entry_add_update($unrated, array('noted_on' => '2026-02-01', 'note' => 'Looked at it'));
+entry_add_update($unrated, array('noted_on' => '2026-03-01', 'note' => 'Still there'));
+is_same(entry_trend(entry_updates($unrated)), '',
     'a timeline with no recorded severity has NO trend, not a stable one');
-is_same(issue_trend(issue_updates($flat)) === '', false, 'while a rated one does');
+is_same(entry_trend(entry_updates($flat)) === '', false, 'while a rated one does');
 
-/* ---- deleting a check-in rolls the derived columns BACK ----------------- */
+/* ---- deleting an update rolls the derived columns BACK ------------------ */
 
-$updates = issue_updates($id);
+$updates = entry_updates($id);
 $newest  = $updates[count($updates) - 1];
-issue_delete_update($newest['id']);
-$issue = issue_get($id);
-is_same($issue['last_checked_on'], '2026-03-05', 'deleting the newest check-in moves last-checked back');
-is_same($issue['severity'], 2, 'and restores the previous rating');
-is_same($issue['next_check_on'], '2026-04-04', 'and recomputes the next check');
+entry_delete_update($newest['id']);
+$entry = entry_get($id);
+is_same($entry['last_checked_on'], '2026-03-05', 'deleting the newest update moves last-checked back');
+is_same($entry['severity'], 2, 'and restores the previous rating');
+is_same($entry['next_check_on'], '2026-04-04', 'and recomputes the next check');
 
 /* ---- status ------------------------------------------------------------ */
 
-ok(issue_set_status($id, ISSUE_RESOLVED), 'an issue can be resolved');
-$issue = issue_get($id);
-is_same($issue['resolved_on'], sw_today(), 'which stamps the date');
-is_same($issue['next_check_on'], null,
-    'A CLOSED ISSUE STOPS ASKING TO BE CHECKED — otherwise it sits on the dashboard forever');
+ok(entry_set_status($id, LOG_RESOLVED), 'an entry can be resolved');
+$entry = entry_get($id);
+is_same($entry['resolved_on'], sw_today(), 'which stamps the date');
+is_same($entry['next_check_on'], null,
+    'A CLOSED ENTRY STOPS ASKING TO BE CHECKED — otherwise it sits on the dashboard forever');
 
-ok(issue_set_status($id, ISSUE_WATCHING), 'and can be reopened');
-ok(issue_get($id)['next_check_on'] !== null, 'which brings its check-back schedule back');
-is_same(issue_get($id)['resolved_on'], null, 'and clears the resolved date');
+ok(entry_set_status($id, LOG_WATCHING), 'and can be reopened');
+ok(entry_get($id)['next_check_on'] !== null, 'which brings its check-back schedule back');
+is_same(entry_get($id)['resolved_on'], null, 'and clears the resolved date');
 
 /* Linking is always OPTIONAL — fix it yourself and it resolves with nothing
  * attached. */
-issue_set_status($id, ISSUE_RESOLVED, null);
-is_same(issue_get($id)['resolved_by_record_id'], null, 'resolving with no record attached is fine');
-issue_set_status($id, ISSUE_DISMISSED, 55);
-is_same(issue_get($id)['resolved_by_record_id'], null,
-    'a record link is ignored on a status other than resolved — it would have no meaning');
-issue_set_status($id, ISSUE_WATCHING);
+entry_set_status($id, LOG_RESOLVED, null);
+is_same(entry_get($id)['resolved_by_update_id'], null, 'resolving with no update attached is fine');
+entry_set_status($id, LOG_DISMISSED, 55);
+is_same(entry_get($id)['resolved_by_update_id'], null,
+    'an update link is ignored on a status other than resolved — it would have no meaning');
+entry_set_status($id, LOG_WATCHING);
 
 /* ---- the list ---------------------------------------------------------- */
 
-$open = issues_list();
+$open = entries_list();
 ok(count($open) >= 3, 'the list defaults to the open statuses');
 
-$leaked = array_filter($open, static fn(array $r): bool => !in_array($r['status'], issue_open_statuses(), true));
+$leaked = array_filter($open, static fn(array $r): bool => !in_array($r['status'], entry_open_statuses(), true));
 is_same($leaked, array(), 'and contains nothing resolved or dismissed');
 
 /* Tags AND rather than OR — a filter that widens as you add to it is one
  * nobody can aim. */
-$both = issues_list(array('tag_ids' => array($kitchen['id'], $plumbing['id'])));
-is_same(count($both), 1, 'two tags narrow to issues carrying BOTH');
+$both = entries_list(array('tag_ids' => array($kitchen['id'], $plumbing['id'])));
+is_same(count($both), 1, 'two tags narrow to entries carrying BOTH');
 
 $roofing = tag_find(TAG_CATEGORY, 'Roofing');
-is_same(count(issues_list(array('tag_ids' => array($kitchen['id'], $roofing['id'])))), 0,
+is_same(count(entries_list(array('tag_ids' => array($kitchen['id'], $roofing['id'])))), 0,
     'and an impossible combination matches nothing rather than everything');
 
-is_same(count(issues_list(array('search' => 'dishwasher'))), 1, 'search covers the description');
-is_same(count(issues_list(array('search' => 'zzzznothing'))), 0, 'and misses cleanly');
-is_same(issues_list(array('status' => array('nonsense'))), array(),
+is_same(count(entries_list(array('search' => 'dishwasher'))), 1, 'search covers the description');
+is_same(count(entries_list(array('search' => 'zzzznothing'))), 0, 'and misses cleanly');
+is_same(entries_list(array('status' => array('nonsense'))), array(),
     'an unknown status filter returns nothing rather than everything');
 
 ok(array_key_exists('tags', $open[0]) && array_key_exists('cover', $open[0]),
@@ -776,31 +864,31 @@ ok(array_key_exists('tags', $open[0]) && array_key_exists('cover', $open[0]),
 
 /* ---- dashboard reads --------------------------------------------------- */
 
-issue_set_status($flat, ISSUE_ACTIVE);
-$action = issues_needing_action(sw_today());
+entry_set_status($flat, LOG_ACTIVE);
+$action = entries_needing_action(sw_today());
 $actionIds = array_column($action, 'id');
-ok(in_array($flat, $actionIds, true), 'an active issue needs action regardless of dates');
+ok(in_array($flat, $actionIds, true), 'an active entry needs action regardless of dates');
 
-$future = issue_create(array(
+$future = entry_create(array(
     'title' => 'Not yet', 'noticed_on' => sw_today(), 'check_interval_days' => 365,
 ));
-ok(!in_array($future, array_column(issues_needing_action(sw_today()), 'id'), true),
-    'a watching issue whose check is a year out does not');
-ok(in_array($future, array_column(issues_upcoming_checks(sw_today()), 'id'), true),
+ok(!in_array($future, array_column(entries_needing_action(sw_today()), 'id'), true),
+    'a watching entry whose check is a year out does not');
+ok(in_array($future, array_column(entries_upcoming_checks(sw_today()), 'id'), true),
     'but it does appear in the forward timeline');
 
 /* ---- cleaning ---------------------------------------------------------- */
 
-is_same(issue_clean_severity(''), null, 'an empty severity is NULL');
-is_same(issue_clean_severity(0), null, 'zero is NULL, not level 1 — it is not a legal rating');
-is_same(issue_clean_severity(9), null, 'out of range is NULL, never clamped up to Urgent');
-is_same(issue_clean_severity('3'), 3, 'a numeric string is accepted');
-is_same(issue_clean_interval('0'), null, 'a zero interval means no reminder');
-is_same(issue_clean_date('nonsense'), null, 'an unreadable date is NULL');
-is_same(issue_clean_text('   '), null, 'whitespace-only text is NULL, not an empty string');
+is_same(entry_clean_severity(''), null, 'an empty severity is NULL');
+is_same(entry_clean_severity(0), null, 'zero is NULL, not level 1 — it is not a legal rating');
+is_same(entry_clean_severity(9), null, 'out of range is NULL, never clamped up to Urgent');
+is_same(entry_clean_severity('3'), 3, 'a numeric string is accepted');
+is_same(entry_clean_interval('0'), null, 'a zero interval means no reminder');
+is_same(entry_clean_date('nonsense'), null, 'an unreadable date is NULL');
+is_same(entry_clean_text('   '), null, 'whitespace-only text is NULL, not an empty string');
 
-ok(throws(static fn() => issue_create(array('title' => '   '))),
-    'an issue cannot be created without a title');
+ok(throws(static fn() => entry_create(array('title' => '   '))),
+    'an entry cannot be created without a title');
 
 /* ---- render helpers ---------------------------------------------------- */
 
@@ -822,11 +910,11 @@ ok(!str_contains(render_tags($evil), '<script>'), 'render_tags escapes tag names
 
 /* ---- delete ------------------------------------------------------------ */
 
-$doomed = issue_create(array('title' => 'Doomed', 'noticed_on' => '2026-01-01'));
-$upd = issue_add_update($doomed, array('noted_on' => '2026-02-01', 'note' => 'x'));
-ok(issue_delete($doomed), 'an issue deletes');
-is_same(issue_get($doomed), null, 'and is gone');
-is_same((int) q('SELECT COUNT(*) FROM issue_updates WHERE id = ?', array($upd))->fetchColumn(), 0,
+$doomed = entry_create(array('title' => 'Doomed', 'noticed_on' => '2026-01-01'));
+$upd = entry_add_update($doomed, array('noted_on' => '2026-02-01', 'note' => 'x'));
+ok(entry_delete($doomed), 'an entry deletes');
+is_same(entry_get($doomed), null, 'and is gone');
+is_same((int) q('SELECT COUNT(*) FROM log_updates WHERE id = ?', array($upd))->fetchColumn(), 0,
     'taking its timeline with it');
 
 /* ======================================================= M4 · maintenance */
@@ -1010,142 +1098,202 @@ is_same($backAgain['recur_months'], null, 'and switching back nulls the months')
 is_same(task_clean_from('nonsense'), 'completion', 'an unknown anchor falls back to from-completion');
 is_same(task_clean_from('due'), 'due', 'and "due" is honoured');
 
-/* ============================================ M5 · records and vendors */
+/* ============================================== M5 · service and vendors */
 
-section('M5 — Service history and vendors');
+section('M5 — Service and vendors');
 
 foreach (array(
-    'lib/records.php', 'lib/vendors.php',
-    'public/history.php', 'public/record.php', 'public/vendors.php', 'public/vendor.php',
-    'public/assets/history.js', 'public/assets/vendors.js',
-    'public/api/record-save.php', 'public/api/record-delete.php',
+    'lib/service.php', 'lib/vendors.php',
+    'public/service.php', 'public/vendors.php', 'public/vendor.php',
+    'public/assets/vendors.js',
     'public/api/vendor-save.php', 'public/api/vendor-delete.php',
 ) as $file) {
     ok(is_file($appRoot . '/' . $file), "M5 ships $file");
 }
 
-foreach (glob($appRoot . '/public/api/{record,vendor}-*.php', GLOB_BRACE) as $endpoint) {
+foreach (glob($appRoot . '/public/api/vendor-*.php') as $endpoint) {
     $src = (string) file_get_contents($endpoint);
     ok(str_contains($src, 'require_login_api()') && str_contains($src, 'require_same_origin()'),
         basename($endpoint) . ' is gated and CSRF-checked');
 }
 
+/* SERVICE IS NOT A TABLE ANY MORE, and lib/service.php is the only file
+ * allowed to know that it has two sources. If a screen starts querying
+ * log_updates and task_completions itself, the two halves drift and the total
+ * on the Service screen quietly stops matching the rows above it. */
+$serviceSrc = (string) file_get_contents($appRoot . '/lib/service.php');
+ok(!str_contains($serviceSrc, 'INSERT') && !str_contains($serviceSrc, 'UPDATE ')
+   && !str_contains($serviceSrc, 'DELETE'),
+    'lib/service.php only reads — both sources are owned by log.php and tasks.php');
+
+$screenSrc = (string) file_get_contents($appRoot . '/public/service.php');
+ok(!str_contains($screenSrc, 'FROM log_updates') && !str_contains($screenSrc, 'FROM task_completions'),
+    'public/service.php goes through service_list(), it does not query the two sources itself');
+
 /* ---- vendors and the computed rating ----------------------------------- */
 
 $plumberTag = tag_find(TAG_WORK_TYPE, 'Plumber');
-$ace = vendor_save(null, array(
+$ridge = vendor_save(null, array(
     'name' => 'Ridgeline Plumbing', 'phone' => '(512) 555-0142',
     'notes' => 'Ask for Danny.', 'tag_ids' => array($plumberTag['id']),
 ));
-ok($ace > 0, 'vendor_save creates');
+ok($ridge > 0, 'vendor_save creates');
 
-$vendor = vendor_get($ace);
+$vendor = vendor_get($ridge);
 is_same($vendor['rating'], null, 'a vendor with no jobs has NO rating — not zero');
 is_same($vendor['jobs'], 0, 'and no jobs');
 is_same(count($vendor['tags']), 1, 'with their trade attached');
 
-/* ---- records ----------------------------------------------------------- */
+/* ---- their work, which now lives in two places ------------------------- */
 
-$r1 = record_save(null, array(
-    'title' => 'Rebuilt the shut-off valve', 'vendor_id' => $ace,
-    'performed_on' => '2026-03-04', 'cost' => '285.00', 'rating' => 5,
+/* UNPLANNED: two visits on a log entry. */
+$valve = entry_create(array('title' => 'Shut-off valve weeping', 'noticed_on' => '2026-03-01'));
+$v1 = entry_add_update($valve, array(
+    'kind' => 'service', 'noted_on' => '2026-03-04', 'note' => 'Rebuilt the shut-off valve',
+    'vendor_id' => $ridge, 'cost' => '285.00', 'rating' => 5,
 ));
-$r2 = record_save(null, array(
-    'title' => 'Emergency call-out', 'vendor_id' => $ace,
-    'performed_on' => '2026-05-11', 'cost' => '460', 'rating' => 3,
+$v2 = entry_add_update($valve, array(
+    'kind' => 'service', 'noted_on' => '2026-05-11', 'note' => 'Emergency call-out',
+    'vendor_id' => $ridge, 'cost' => '460', 'rating' => 3,
 ));
 /* A job with no rating must not drag the average down. */
-$r3 = record_save(null, array(
-    'title' => 'Looked at the boiler', 'vendor_id' => $ace, 'performed_on' => '2026-06-01',
+$v3 = entry_add_update($valve, array(
+    'kind' => 'service', 'noted_on' => '2026-06-01', 'note' => 'Looked at the boiler',
+    'vendor_id' => $ridge,
 ));
 
-$vendor = vendor_get($ace);
-is_same($vendor['jobs'], 3, 'every job counts toward the job count');
-is_same($vendor['rated_jobs'], 2, 'but only rated ones count as rated');
+/* PLANNED: a maintenance completion somebody was paid for. This is the case
+ * the author named — a paid routine service is a maintenance completion that
+ * cost money, not a problem that had to be logged. */
+$pump = task_create(array(
+    'title' => 'Pump the septic tank', 'recur_kind' => 'interval',
+    'interval_count' => 3, 'interval_unit' => 'year', 'next_due_on' => '2026-07-01',
+));
+task_complete($pump, array(
+    'completed_on' => '2026-07-02', 'note' => 'Pumped and inspected the baffles',
+    'vendor_id' => $ridge, 'cost' => '575.00', 'rating' => 4,
+));
+
+$vendor = vendor_get($ridge);
+is_same($vendor['jobs'], 4, 'a vendor\'s job count spans BOTH sources — repairs and paid maintenance');
+is_same($vendor['rated_jobs'], 3, 'but only rated ones count as rated');
 is_same($vendor['average'], 4.0,
     'the average is over RATED jobs only — an unrated job is not a zero');
 is_same($vendor['rating'], 4.0, 'and with no override, that is what shows');
 
+/* The two sources are summed, not averaged together: averaging the log's 4.0
+ * against maintenance's 4.0 happens to agree here, but a vendor with one
+ * 5-star repair and four 3-star services would come out at 4.0 rather than the
+ * true 3.4. */
+$viaSums = (5 + 3 + 4) / 3;
+is_same($vendor['average'], round($viaSums, 2),
+    'RATINGS ARE SUMMED ACROSS SOURCES, never averaged as two averages');
+
 /* The override is shown BESIDE the average, never instead of it. */
-vendor_save($ace, array('name' => 'Ridgeline Plumbing', 'rating_override' => 2));
-$vendor = vendor_get($ace);
+vendor_save($ridge, array('name' => 'Ridgeline Plumbing', 'rating_override' => 2));
+$vendor = vendor_get($ridge);
 is_same($vendor['rating'], 2.0, 'an override wins for display');
 is_same($vendor['average'], 4.0, 'and the average is still available to print beside it');
 
-vendor_save($ace, array('name' => 'Ridgeline Plumbing', 'rating_override' => ''));
-is_same(vendor_get($ace)['rating_override'], null, 'clearing the override goes back to the average');
-is_same(vendor_get($ace)['rating'], 4.0, 'which is what shows again');
+vendor_save($ridge, array('name' => 'Ridgeline Plumbing', 'rating_override' => ''));
+is_same(vendor_get($ridge)['rating_override'], null, 'clearing the override goes back to the average');
+is_same(vendor_get($ridge)['rating'], 4.0, 'which is what shows again');
 
 is_same(vendor_clean_rating(0), null, 'a zero override is NULL — zero is not a legal rating');
 is_same(vendor_clean_rating(7), null, 'and out of range is NULL, never clamped');
 
-/* ---- the snapshot name ------------------------------------------------- */
+/* ---- the snapshot name, in both places --------------------------------- */
 
-is_same(record_get($r1)['vendor_name'], 'Ridgeline Plumbing', 'the vendor name is snapshotted onto the record');
+ok(vendor_delete($ridge), 'a vendor can be deleted');
 
-$jobs = $vendor['jobs'];
-ok(vendor_delete($ace), 'a vendor can be deleted');
+$visitRow = q('SELECT vendor_id, vendor_name FROM log_updates WHERE id = ?', array($v1))->fetch();
+is_same($visitRow['vendor_id'], null, 'which nulls the link on their service updates');
+is_same((string) $visitRow['vendor_name'], 'Ridgeline Plumbing',
+    'BUT THE UPDATE STILL SAYS WHO DID THE WORK — the snapshot survives the vendor');
 
-$after = record_get($r1);
-is_same($after['vendor_id'], null, 'which nulls the link on their records');
-is_same($after['vendor_name'], 'Ridgeline Plumbing',
-    'BUT THE RECORD STILL SAYS WHO DID THE WORK — the snapshot survives the vendor');
-is_same((int) q('SELECT COUNT(*) FROM service_records WHERE id IN (?, ?, ?)',
-    array($r1, $r2, $r3))->fetchColumn(), 3, 'and none of the history is deleted');
+$compRow = q('SELECT vendor_id, vendor_name FROM task_completions WHERE task_id = ?',
+    array($pump))->fetch();
+is_same($compRow['vendor_id'], null, 'and on their maintenance completions');
+is_same((string) $compRow['vendor_name'], 'Ridgeline Plumbing',
+    'which keep the name too — the same rule, applied in both places');
 
-/* A name typed for somebody not in the directory is kept as-is. */
-$diy = record_save(null, array(
-    'title' => 'Re-hung the sunroom door', 'vendor_name' => 'Me', 'performed_on' => '2026-02-02',
-));
-is_same(record_get($diy)['vendor_name'], 'Me', 'a typed name is kept when there is no vendor row');
-is_same(record_get($diy)['vendor_id'], null, 'with no link');
+is_same((int) q('SELECT COUNT(*) FROM log_updates WHERE id IN (?, ?, ?)',
+    array($v1, $v2, $v3))->fetchColumn(), 3, 'and none of the history is deleted');
 
 /* ---- cost: NULL is not zero -------------------------------------------- */
 
-is_same(record_clean_cost(''), null, 'an empty cost is NULL — "not recorded"');
-is_same(record_clean_cost(null), null, 'and so is a missing one');
-is_same(record_clean_cost('0'), '0.00', 'but a typed zero is a real zero — a different fact');
-is_same(record_clean_cost('$1,285.50'), '1285.50', 'currency symbols and separators are stripped');
-is_same(record_clean_cost('   '), null, 'whitespace is NULL');
-is_same(record_clean_cost('not a number'), null, 'and junk is NULL rather than 0');
-is_same(record_clean_cost('-40'), '0.00', 'a negative cost floors at zero');
+is_same(service_clean_cost(''), null, 'an empty cost is NULL — "not recorded"');
+is_same(service_clean_cost(null), null, 'and so is a missing one');
+is_same(service_clean_cost('0'), '0.00', 'but a typed zero is a real zero — a different fact');
+is_same(service_clean_cost('$1,285.50'), '1285.50', 'currency symbols and separators are stripped');
+is_same(service_clean_cost('   '), null, 'whitespace is NULL');
+is_same(service_clean_cost('not a number'), null, 'and junk is NULL rather than 0');
+is_same(service_clean_cost('-40'), '0.00', 'a negative cost floors at zero');
 
 is_same(render_cost(null), '', 'a NULL cost renders as NOTHING');
 is_same(render_cost('0.00'), '$0.00', 'while a real zero renders as $0.00');
 
-/* ---- the history list -------------------------------------------------- */
+/* ---- the service list, across both sources ----------------------------- */
 
-$all = records_list();
-ok(count($all) >= 4, 'records_list returns the history');
-is_same($all[0]['performed_on'] >= $all[1]['performed_on'], true, 'newest work first');
-ok(array_key_exists('media', $all[0]) && array_key_exists('tags', $all[0]),
-    'decorated with tags and media in batch');
+$all = service_list();
+ok(count($all) >= 4, 'service_list returns work from both sources in one stream');
 
-is_same(count(records_list(array('year' => 2026))), count($all), 'the year filter matches');
-is_same(count(records_list(array('year' => 1999))), 0, 'and excludes other years');
-is_same(count(records_list(array('search' => 'shut-off'))), 1, 'search covers the title');
-is_same(count(records_list(array('search' => 'Ridgeline'))), 3,
-    'and the snapshotted vendor name, so a deleted vendors work is still findable by their name');
+$sources = array_unique(array_column($all, 'source'));
+sort($sources);
+is_same($sources, array('log', 'maintenance'),
+    'and both sources are actually represented — a broken half would look like a short list');
 
-ok(in_array(2026, records_years(), true), 'records_years lists the years that have work in them');
+is_same($all[0]['on_date'] >= $all[1]['on_date'], true, 'newest work first');
 
-/* ---- linking an issue -------------------------------------------------- */
-
-$issueId = issue_create(array('title' => 'Leaky valve', 'noticed_on' => '2026-02-01'));
-$fix = record_save(null, array(
-    'title' => 'Replaced it', 'performed_on' => '2026-03-01', 'issue_id' => $issueId,
+/* A completion with NEITHER a cost nor a vendor is you doing it yourself. It
+ * belongs on the task, not in a list of what the house cost. */
+$diy = task_create(array(
+    'title' => 'Sweep the chimney myself', 'recur_kind' => 'interval',
+    'interval_count' => 1, 'interval_unit' => 'year', 'next_due_on' => '2026-08-01',
 ));
-is_same(record_get($fix)['issue_id'], $issueId, 'a record can reference an issue');
-is_same(issue_get($issueId)['resolved_by_record_id'], null,
-    'but referencing it does NOT resolve it — those are different claims');
+task_complete($diy, array('completed_on' => '2026-08-02', 'note' => 'Took an afternoon'));
+$titles = array_column(service_list(), 'title');
+ok(!in_array('Took an afternoon', $titles, true),
+    'AN UNPAID COMPLETION IS NOT A SERVICE EVENT — doing it yourself is not a bill');
 
-issue_set_status($issueId, ISSUE_RESOLVED, $fix);
-is_same(issue_get($issueId)['resolved_by_record_id'], $fix, 'resolving with the record is explicit');
+is_same(count(service_list(array('year' => 1999))), 0, 'the year filter excludes other years');
+ok(count(service_list(array('year' => 2026))) >= 4, 'and matches the year that has the work');
+is_same(count(service_list(array('search' => 'Rebuilt'))), 1, 'search covers the note');
+is_same(count(service_list(array('search' => 'Ridgeline'))), 4,
+    'and the snapshotted vendor name, so a deleted vendor\'s work is still findable by their name');
+is_same(count(service_list(array('search' => 'baffles'))), 1,
+    'search reaches into the maintenance half too, not just the log');
 
-/* Deleting the record must not delete the issue it closed. */
-record_delete($fix);
-ok(issue_get($issueId) !== null, 'deleting the record leaves the issue standing');
-is_same(issue_get($issueId)['resolved_by_record_id'], null, 'with the link nulled');
+ok(in_array(2026, service_years(), true), 'service_years lists the years that have work in them');
+
+/* The title of a visit is the note's first line, falling back to the parent. */
+is_same(service_title(array('note' => "Rebuilt the valve\nsecond line", 'parent_title' => 'X')),
+    'Rebuilt the valve', 'a visit is titled by the first line of its note');
+is_same(service_title(array('note' => '   ', 'parent_title' => 'Shut-off valve weeping')),
+    'Shut-off valve weeping', 'and falls back to the parent when there is no note');
+
+/* ---- the total, which must not lie ------------------------------------- */
+
+$totals = service_total(array(
+    array('cost' => '100.00'), array('cost' => '50.50'), array('cost' => null),
+));
+is_same($totals['total'], 150.5, 'service_total adds what was recorded');
+is_same($totals['priced'], 2, 'counts the priced rows');
+is_same($totals['unpriced'], 1,
+    'AND COUNTS THE UNPRICED ONES SEPARATELY — summing them as zero makes a total you would trust and should not');
+
+/* ---- an entry resolved by its own service update ----------------------- */
+
+is_same(entry_get($valve)['resolved_by_update_id'], null,
+    'a service visit on an entry does NOT resolve it — those are different claims');
+
+entry_set_status($valve, LOG_RESOLVED, $v2);
+is_same(entry_get($valve)['resolved_by_update_id'], $v2,
+    'resolving with the update that fixed it is explicit');
+
+/* Deleting that update must not delete the entry it closed. */
+entry_delete_update($v2);
+ok(entry_get($valve) !== null, 'deleting the update leaves the entry standing');
 
 /* ========================================= M6 · dashboard and reminders */
 
@@ -1261,9 +1409,9 @@ is_same((int) cfg('reminders.max_per_run', 10), 10, 'the per-run cap is configur
 /* ---- the dashboard reads ----------------------------------------------- */
 
 $now = dashboard_now($today);
-ok(array_key_exists('issues', $now) && array_key_exists('tasks', $now),
-    'dashboard_now keeps issues and maintenance in SEPARATE groups, per the brief');
-is_same($now['total'], count($now['issues']) + count($now['tasks']), 'and totals them');
+ok(array_key_exists('log', $now) && array_key_exists('tasks', $now),
+    'dashboard_now keeps the log and maintenance in SEPARATE groups, per the brief');
+is_same($now['total'], count($now['log']) + count($now['tasks']), 'and totals them');
 
 /* ---- the forward timeline ---------------------------------------------- */
 
@@ -1289,18 +1437,18 @@ is_same(array_intersect($firstKeys, $secondKeys), array(),
 
 /* Both kinds appear in one stream, which is the deliberate departure from the
  * brief's "keep them separate" for the forward view. */
-$issueId = issue_create(array(
+$ceiling = entry_create(array(
     'title' => 'Watch the ceiling', 'noticed_on' => $today, 'check_interval_days' => 30,
 ));
 $mixed = dashboard_timeline($today, null, 100);
 $kinds = array_unique(array_column($mixed['rows'], 'kind'));
-ok(in_array('issue', $kinds, true) && in_array('task', $kinds, true),
-    'the forward timeline COMBINES issues and maintenance — chronology is the organising principle there');
+ok(in_array('entry', $kinds, true) && in_array('task', $kinds, true),
+    'the forward timeline COMBINES the log and maintenance — chronology is the organising principle there');
 
-/* An issue contributes exactly one row: its next check. A chain of them would
- * be schedule the app never promised. */
-$mine = array_filter($mixed['rows'], static fn(array $r): bool => $r['kind'] === 'issue' && $r['id'] === $issueId);
-is_same(count($mine), 1, 'an issue contributes ONE check-back, never a projected chain');
+/* A log entry contributes exactly one row: its next check. A chain of them
+ * would be schedule the app never promised. */
+$mine = array_filter($mixed['rows'], static fn(array $r): bool => $r['kind'] === 'entry' && $r['id'] === $ceiling);
+is_same(count($mine), 1, 'a log entry contributes ONE check-back, never a projected chain');
 
 $projected = array_filter($mixed['rows'], static fn(array $r): bool => $r['projected'] === true);
 ok(count($projected) > 0, 'while recurring tasks do project forward');
@@ -1426,9 +1574,9 @@ ok(str_contains($chromeSrc, "getElementById('menu-items')"),
 /* Render a real screen and prove the three pieces arrive together. Structure
  * checks on separate files cannot see that they meet. */
 ob_start();
-page_head('Test', 'issues');
+page_head('Test', 'log');
 screen_head('Test', page_menu());
-page_foot('issues');
+page_foot('log');
 $chrome = (string) ob_get_clean();
 
 ok(str_contains($chrome, 'id="app-menu"'), 'a rendered page has the hamburger button');
@@ -1483,8 +1631,8 @@ ok(str_contains($some, '<a class="chip'), 'chips are links, not buttons');
 
 /* ---- rows and the FAB --------------------------------------------------- */
 
-$fab = render_fab('issue.php?new=1', 'Log an issue');
-ok(str_contains($fab, 'class="fab"') && str_contains($fab, 'aria-label="Log an issue"'),
+$fab = render_fab('entry.php?new=1', 'Log something');
+ok(str_contains($fab, 'class="fab"') && str_contains($fab, 'aria-label="Log something"'),
     'the FAB is a labelled link');
 
 $pencil = render_row_edit();
@@ -1495,7 +1643,7 @@ ok(!str_contains($pencil, '<a ') && !str_contains($pencil, 'tabindex'),
 
 /* Every list screen uses the FAB rather than a button that drifts down the
  * page as the list grows. */
-foreach (array('issues.php', 'maintenance.php', 'vendors.php', 'history.php') as $screen) {
+foreach (array('log.php', 'maintenance.php', 'vendors.php') as $screen) {
     $src = (string) file_get_contents($appRoot . '/public/' . $screen);
     ok(str_contains($src, 'render_fab('), "$screen uses the floating add button");
     ok(!preg_match('/class="btn-primary" href="[a-z]+\.php\?new=1"/', $src),
@@ -1537,6 +1685,100 @@ $after = array_column(tags_of_kind(TAG_LOCATION), 'name');
 $want  = $after;
 usort($want, 'strcasecmp');
 is_same($after, $want, 'and running it puts a reordered list back into alphabetical order');
+
+/* ===================================================== Round 3 · the merge */
+
+section('Round 3 — Issues and Service History, merged');
+
+/* THE SHAPE OF THE MERGE. One kind of thing (a log entry) that can carry both
+ * observations and paid visits, plus a Service VIEW that reads across the two
+ * places a paid visit can happen. These assertions are what stop a later pass
+ * quietly re-growing a service_records table. */
+
+$layoutSrc = (string) file_get_contents($appRoot . '/lib/layout.php');
+ok(str_contains($layoutSrc, "'log'"), 'the Log tab exists');
+ok(!str_contains($layoutSrc, "'issues'") && !str_contains($layoutSrc, 'issues.php'),
+    'and no Issues tab survives beside it');
+
+$menu = menu_items();
+$menuHrefs = array_column($menu, 'href');
+ok(in_array('service.php', $menuHrefs, true),
+    'SERVICE IS IN THE HAMBURGER, not a tab — it is the view you go to on purpose');
+ok(!in_array('history.php', $menuHrefs, true), 'and the old history screen is not');
+
+/* ---- the entry screen offers both kinds of update ----------------------- */
+
+$entrySrc = (string) file_get_contents($appRoot . '/public/entry.php');
+ok(str_contains($entrySrc, 'id="update-kind"'), 'the update form has a kind switch');
+ok(str_contains($entrySrc, 'data-kind="service"'), 'with a Service chip');
+ok(str_contains($entrySrc, 'data-kind-fields="service"'),
+    'and a block of money fields that belongs to it');
+foreach (array('vendor_id', 'vendor_name', 'cost', 'rating') as $field) {
+    ok((bool) preg_match('/name="' . $field . '"/', $entrySrc),
+        "the service block carries $field");
+}
+ok(str_contains($entrySrc, 'id="update-'), 'timeline rows are anchorable, so "See what fixed it" can jump to one');
+
+$entryJs = (string) file_get_contents($appRoot . '/public/assets/entry.js');
+ok(str_contains($entryJs, "'update-kind'"), 'entry.js wires the kind switch');
+ok(str_contains($entryJs, "data-kind-fields"), 'and reveals the fields the chip belongs to');
+ok(str_contains($entryJs, "kind === 'service'"),
+    'AND ONLY SENDS THE MONEY FIELDS ON A SERVICE — stale inputs must not file an invoice against a note');
+
+/* The ids and the selectors have to agree. This is the class of bug that
+ * shipped the dead hamburger: markup on one side, a listener on the other,
+ * nothing in any log when they stop matching. */
+foreach (array('entry-form', 'entry-tags', 'entry-status', 'entry-delete',
+               'update-form', 'update-photo', 'update-add') as $id) {
+    ok(str_contains($entrySrc, 'id="' . $id . '"'), "entry.php renders #$id");
+    ok(str_contains($entryJs, "'" . $id . "'") || str_contains($entryJs, "'#" . $id . "'"),
+        "and entry.js looks for #$id");
+}
+
+/* ---- a paid maintenance completion has a UI, not just an endpoint ------- */
+
+/* task_complete() grew four columns in the merge. Without a form they are
+ * write-only from the API, and half of "what did the house cost" would simply
+ * never be recorded. */
+$taskSrc = (string) file_get_contents($appRoot . '/public/task.php');
+ok(str_contains($taskSrc, 'id="complete-form"'), 'task.php can record a paid completion');
+foreach (array('vendor_id', 'vendor_name', 'cost', 'rating', 'completed_on') as $field) {
+    ok((bool) preg_match('/name="' . $field . '"/', $taskSrc), "the completion form carries $field");
+}
+ok(str_contains($taskSrc, 'id="task-complete"'),
+    'AND THE ONE-TAP BUTTON SURVIVES — most completions are you, in ten minutes');
+ok(str_contains($taskSrc, 'id="completion-'), 'completions are anchorable from the Service screen');
+
+$maintJs = (string) file_get_contents($appRoot . '/public/assets/maintenance.js');
+is_same(substr_count($maintJs, "api/task-complete.php"), 3,
+    'both controls post to the SAME endpoint — one code path moves a due date');
+
+$serviceScreen = (string) file_get_contents($appRoot . '/public/service.php');
+ok(str_contains($serviceScreen, "'#update-'") || str_contains($serviceScreen, "#update-"),
+    'a service row links to the visit itself, not just its parent');
+
+/* ---- the migration --------------------------------------------------- */
+
+/* SHE HAS LIVE DATA. The migration is the only path from the old shape to this
+ * one, so its safety properties are asserted rather than assumed. */
+ok(is_file($appRoot . '/tools/migrate-to-log.php'), 'a migration exists');
+$migrateSrc = (string) file_get_contents($appRoot . '/tools/migrate-to-log.php');
+ok(str_contains($migrateSrc, '--dry-run') && str_contains($migrateSrc, '--confirm'),
+    'it will not write without being told twice');
+ok(strpos($migrateSrc, 'DROP TABLE') > strpos($migrateSrc, 'NUMBERS DO NOT ADD UP'),
+    'AND IT DROPS NOTHING UNTIL THE BEFORE AND AFTER COUNTS AGREE — the old tables are the safety net');
+ok(str_contains($migrateSrc, 'service_records') && str_contains($migrateSrc, 'record_tags'),
+    'both old tables are accounted for');
+
+/* ---- the export still carries everything ------------------------------- */
+
+$exportSrc = (string) file_get_contents($appRoot . '/public/api/export.php');
+foreach (array('log_entries', 'log_updates', 'entry_tags', 'task_completions', 'media') as $table) {
+    ok(str_contains($exportSrc, $table), "the export includes $table");
+}
+ok(!str_contains($exportSrc, 'service_records'), 'and nothing that no longer exists');
+ok(str_contains($exportSrc, 'service.csv') && str_contains($exportSrc, 'service_list()'),
+    'the money CSV is built from service_list(), so it sees both sources');
 
 /* =================================================================== done */
 

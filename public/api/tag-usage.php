@@ -1,7 +1,7 @@
 <?php
-/* GET /api/tag-usage.php?id=3  ->  {issue: 6, task: 2, record: 0, vendor: 0}
+/* GET /api/tag-usage.php?id=3  ->  {entry: 6, task: 2, vendor: 0}
  *
- * Asked before showing the delete confirmation. "Kitchen is on 6 issues and 2
+ * Asked before showing the delete confirmation. "Kitchen is on 6 log entries and 2
  * tasks" is the difference between an informed delete and one that looks
  * undoable and quietly detaches six things.
  *

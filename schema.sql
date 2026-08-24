@@ -18,6 +18,12 @@
 --   2. FAIL SOFT. A malformed row, an unknown tag or a missing photo degrades
 --      that one row and never 500s a screen.
 --
+-- THE LOG ABSORBED SERVICE RECORDS. `issues` and `issue_updates` are now
+-- `log_entries` and `log_updates`, and the old `service_records` table is gone
+-- — a service call is an update of kind 'service' on a log entry, and routine
+-- paid work is a task_completion that carries a cost. tools/migrate-to-log.php
+-- moves an existing install; docs/DELEGATION-PLAN.md §2.15 has the reasoning.
+--
 -- MySQL/MariaDB is the production target and the only one.
 -- tools/test-harness.php translates this file into SQLite because the build
 -- environment has no MySQL; a green run says the schema is COHERENT, not that
@@ -59,7 +65,7 @@ INSERT IGNORE INTO properties (id, name) VALUES (1, 'Home');
 -- RENAMING IS THE WHOLE REASON THIS IS A FOREIGN KEY AND NOT A STRING.
 -- Everything links to tags.id, so `UPDATE tags SET name = ?` is the entire
 -- rename and every issue already filed under the old name follows it. Compare
--- service_records.vendor_name below, which IS a string, deliberately, for the
+-- log_updates.vendor_name below, which IS a string, deliberately, for the
 -- opposite reason. A room that gets renamed is the same room; a vendor that
 -- gets deleted is gone and the invoice still has to say who sent it.
 --
@@ -169,113 +175,173 @@ INSERT IGNORE INTO tags (kind, property_id, name, sort_order) VALUES
   ('work_type', NULL, 'Chimney Sweep',     110),
   ('work_type', NULL, 'Painter',           120);
 
+-- NOTE ON ORDERING: vendors is created BEFORE log_updates because that
+-- table has a foreign key to it, and MySQL will not accept a forward
+-- reference. Moving it back down breaks a fresh install, loudly.
 
--- ------------------------------------------------------------------ issues
+-- ----------------------------------------------------------------- vendors
 
--- The original core idea: log a potential problem and watch whether it moves.
-CREATE TABLE IF NOT EXISTS issues (
+CREATE TABLE IF NOT EXISTS vendors (
+  id              INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  property_id     INT UNSIGNED NOT NULL DEFAULT 1,
+
+  name            VARCHAR(160) NOT NULL,
+  phone           VARCHAR(40)  NULL,
+  email           VARCHAR(255) NULL,
+  notes           TEXT         NULL,
+
+  -- NULL = use the average of this vendor's rated service records.
+  -- Non-NULL = "I've decided", and the average is shown beside it rather than
+  -- replaced, so the override never hides what it is overriding.
+  --
+  -- There is no stored average. It is AVG() at read time over a handful of
+  -- rows per vendor; caching it would be a denormalization with a sync bug
+  -- attached and nothing to buy with it.
+  rating_override TINYINT UNSIGNED NULL,
+
+  created_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+  PRIMARY KEY (id),
+  KEY idx_name (name),
+  CONSTRAINT fk_vendors_property FOREIGN KEY (property_id) REFERENCES properties(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- ------------------------------------------------------------- log_entries
+
+-- THE LOG. One table for everything that happens to the house that was not
+-- scheduled: a problem you are watching, a problem you are fixing, and the
+-- record of it once it is fixed.
+--
+-- THIS USED TO BE TWO TABLES — `issues` and `service_records` — and merging
+-- them is the single biggest correction in this schema's history. They were
+-- siblings, and they are not: an issue and the service call that resolves it
+-- are ONE STORY at two moments. The author found this out when her AC failed.
+-- It was not "an issue" and then, separately, "a service record". It was:
+-- noticed it was not cooling, called somebody, they came and replaced a
+-- capacitor for $340, it worked again. Four entries in one timeline.
+--
+-- So a service call is now a KIND OF UPDATE (see log_updates), not a kind of
+-- row up here. And routine paid work — the annual HVAC service, the septic
+-- pump-out — is not a log entry at all: it is a maintenance completion that
+-- cost money, which is why task_completions carries the same vendor/cost/
+-- rating columns.
+CREATE TABLE IF NOT EXISTS log_entries (
   id                    INT UNSIGNED NOT NULL AUTO_INCREMENT,
   property_id           INT UNSIGNED NOT NULL DEFAULT 1,
 
-  -- RESERVED AND INERT (§2.4). No users table, no foreign key, nothing reads
-  -- it. It exists so that adding shared household access later is a backfill
-  -- of one column rather than an ALTER across six tables. This is the
-  -- deliberate exception to the siblings' "don't leave hooks" rule, and the
-  -- brief asks for it in as many words.
+  -- RESERVED AND INERT. No users table, no foreign key, nothing reads it. It
+  -- exists so shared household access later is a backfill of one column
+  -- rather than an ALTER across six tables.
   user_id               INT UNSIGNED NULL,
 
   title                 VARCHAR(200) NOT NULL,
   description           TEXT         NULL,
 
-  -- watching  : logged, being observed, no action decided (the core idea)
+  -- watching  : logged, being observed, no action decided
   -- active    : this needs doing
   -- resolved  : fixed
   -- dismissed : watched it, it was nothing — out of the list without
-  --             pretending it was repaired (§2.5)
+  --             pretending it was repaired
   status                ENUM('watching','active','resolved','dismissed')
                         NOT NULL DEFAULT 'watching',
 
   -- 1..4 = Watch / Minor / Major / Urgent. NULL MEANS NOT SET and renders as
-  -- nothing. Zero is not a legal severity — same call Book Tracker makes for
-  -- ratings, and for the same reason: unset and lowest are different facts,
-  -- cheap to distinguish now and impossible to reconstruct later.
-  --
-  -- DENORMALIZED from the newest issue_updates row that carries one (§2.7).
-  -- The dashboard sorts on it, and deriving it per row means a correlated
-  -- subquery over a table that only grows.
+  -- nothing. Zero is not a legal severity. Denormalized from the newest
+  -- update that carried one; lib/log.php is the only writer.
   severity              TINYINT UNSIGNED NULL,
 
   noticed_on            DATE         NOT NULL,
 
-  -- ---- the check-back loop (§2.6) --------------------------------------
-  -- The rule, the last event, and the answer. The third is stored rather than
-  -- computed BECAUSE it is what the dashboard queries: `last_checked_on +
-  -- INTERVAL check_interval_days DAY` is a predicate no index can help with
-  -- and one the SQLite harness cannot evaluate at all. Written in PHP on every
-  -- check-in — the same discipline maintenance_tasks.next_due_on follows.
-  --
-  -- All three NULL together = an issue nobody has asked to be reminded about.
+  -- ---- the check-back loop ---------------------------------------------
+  -- The rule, the last event, and the answer. The third is STORED because it
+  -- is what the dashboard queries: `last_checked_on + INTERVAL n DAY` is a
+  -- predicate no index can help with and one the SQLite harness cannot
+  -- evaluate at all. Written in PHP on every check-in.
   check_interval_days   SMALLINT UNSIGNED NULL,
   last_checked_on       DATE         NULL,
   next_check_on         DATE         NULL,
 
   resolved_on           DATE         NULL,
 
-  -- Which service record FIXED it. Optional and never required (§2.5): fix
-  -- something yourself and the issue resolves with nothing attached.
+  -- WHICH UPDATE FIXED IT. Optional and never required — fix something
+  -- yourself and it resolves with nothing attached.
   --
-  -- SEPARATE FROM service_records.issue_id, which says "this work relates to
-  -- this issue". Three visits can reference one issue while only one of them
-  -- resolved it.
-  --
-  -- THIS ONE HAS NO FOREIGN KEY, AND THAT IS NOT AN OVERSIGHT. It would have
-  -- to point forward at service_records, which is created further down this
-  -- file, so the constraint could only be added by a trailing ALTER TABLE —
-  -- and SQLite cannot add a foreign key by ALTER at all, so the test harness
-  -- would be exercising a different schema from production. A rule enforced
-  -- in MySQL and absent in the tests is worse than one enforced in PHP and
-  -- tested, because only the second kind fails loudly when it breaks.
-  --
-  -- So record_delete() in lib/records.php clears this column, and a test
-  -- covers it. Nothing else may delete a service_records row.
-  resolved_by_record_id INT UNSIGNED NULL,
+  -- No foreign key, deliberately: it points forward at log_updates, created
+  -- below, and SQLite cannot add one by ALTER, so a database-enforced version
+  -- would be absent from the tests. lib/log.php clears it on delete instead,
+  -- and a test covers that.
+  resolved_by_update_id INT UNSIGNED NULL,
 
   created_at            DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
   PRIMARY KEY (id),
   KEY idx_status (status),
-  -- Carries the dashboard's overdue-check branch AND §2.13's forward timeline.
-  -- Do not drop this as redundant with idx_status; the timeline query does not
-  -- filter on status first.
+  -- Carries the dashboard's overdue-check branch AND the forward timeline.
   KEY idx_next_check (next_check_on),
-  CONSTRAINT fk_issues_property FOREIGN KEY (property_id) REFERENCES properties(id)
+  CONSTRAINT fk_entries_property FOREIGN KEY (property_id) REFERENCES properties(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
--- ----------------------------------------------------------- issue_updates
+-- ------------------------------------------------------------- log_updates
 
 -- The timeline. NOTHING HERE IS EVER OVERWRITTEN — that is the whole feature.
 -- Each check-in is a new row with its own date, note and photos, so the
 -- progression is visible instead of being replaced by its latest state.
-CREATE TABLE IF NOT EXISTS issue_updates (
-  id         INT UNSIGNED NOT NULL AUTO_INCREMENT,
-  issue_id   INT UNSIGNED NOT NULL,
+--
+-- TWO KINDS, AND THAT IS WHAT ABSORBED THE OLD service_records TABLE:
+--
+--   note     something you observed. date, text, optionally a new severity.
+--   service  somebody was paid to do something. The same date and text, plus
+--            a vendor, a cost and a rating for that visit.
+--
+-- A service is an EVENT IN THE STORY rather than a separate record of one.
+-- Three visits can appear on one entry while only one of them resolved it —
+-- which is exactly what log_entries.resolved_by_update_id points at.
+CREATE TABLE IF NOT EXISTS log_updates (
+  id           INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  entry_id     INT UNSIGNED NOT NULL,
 
-  noted_on   DATE         NOT NULL,
-  note       TEXT         NULL,
+  kind         ENUM('note','service') NOT NULL DEFAULT 'note',
 
-  -- Optional. Set it and "stable vs. worsening" becomes data you can render as
-  -- a trend beside the photos, instead of prose buried in a note (§2.7).
-  -- Writing this is what updates issues.severity.
-  severity   TINYINT UNSIGNED NULL,
+  noted_on     DATE         NOT NULL,
+  note         TEXT         NULL,
 
-  created_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  -- Optional, and only meaningful on a note. Set it and "stable vs. worsening"
+  -- becomes data you can render as a trend. Writing this is what updates
+  -- log_entries.severity.
+  severity     TINYINT UNSIGNED NULL,
+
+  -- ---- service columns, all NULL on a note -----------------------------
+
+  -- SET NULL, never CASCADE. Deleting a vendor MUST NOT delete the record of
+  -- work they did — that history is the thing the app is for.
+  vendor_id    INT UNSIGNED NULL,
+
+  -- A SNAPSHOT STRING, and the one place a name is stored rather than joined.
+  -- The deliberate opposite of the tags table's foreign key: a room that gets
+  -- renamed is the same room, but a vendor that gets deleted is gone and the
+  -- 2023 invoice still has to say who sent it. Written on insert; never
+  -- synced afterwards.
+  vendor_name  VARCHAR(160) NULL,
+
+  -- NULL = not recorded, which is different from free. DECIMAL, never FLOAT:
+  -- money in binary floating point does not add up.
+  cost         DECIMAL(10,2) NULL,
+
+  -- 1..5 for THIS VISIT. NULL = unrated. A vendor's overall rating is the
+  -- average of these and of task_completions.rating.
+  rating       TINYINT UNSIGNED NULL,
+
+  created_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
   PRIMARY KEY (id),
-  KEY idx_issue_date (issue_id, noted_on),
-  CONSTRAINT fk_updates_issue FOREIGN KEY (issue_id)
-    REFERENCES issues(id) ON DELETE CASCADE
+  KEY idx_entry_date (entry_id, noted_on),
+  -- The Service view range-scans this: every paid visit, newest first.
+  KEY idx_service (kind, noted_on),
+  KEY idx_vendor (vendor_id),
+  CONSTRAINT fk_updates_entry  FOREIGN KEY (entry_id)  REFERENCES log_entries(id) ON DELETE CASCADE,
+  CONSTRAINT fk_updates_vendor FOREIGN KEY (vendor_id) REFERENCES vendors(id)     ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 
 
 -- ------------------------------------------------------- maintenance_tasks
@@ -285,7 +351,7 @@ CREATE TABLE IF NOT EXISTS issue_updates (
 CREATE TABLE IF NOT EXISTS maintenance_tasks (
   id                INT UNSIGNED NOT NULL AUTO_INCREMENT,
   property_id       INT UNSIGNED NOT NULL DEFAULT 1,
-  user_id           INT UNSIGNED NULL,          -- reserved, see issues.user_id
+  user_id           INT UNSIGNED NULL,          -- reserved, see log_entries.user_id
 
   title             VARCHAR(200) NOT NULL,
   instructions      TEXT         NULL,
@@ -338,28 +404,47 @@ CREATE TABLE IF NOT EXISTS maintenance_tasks (
   CONSTRAINT fk_tasks_property FOREIGN KEY (property_id) REFERENCES properties(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-
 -- -------------------------------------------------------- task_completions
 
 -- "When did I last flush the water heater" — answerable, and it survives the
 -- task being edited. next_due_on only ever holds ONE date; this is the record.
+--
+-- IT CARRIES THE SERVICE COLUMNS TOO, and that is the other half of merging
+-- away service_records. Routine paid work — the annual HVAC service, the
+-- septic pump-out — is NOT a problem that got fixed. It is a scheduled job
+-- that happened and cost money. Filing it as a log entry would mean inventing
+-- a problem that never existed.
+--
+-- So "service" is not a kind of thing in this schema. It is something that can
+-- happen in two places: to a log entry (unplanned) or to a maintenance
+-- completion (planned). The Service view is the union of the two, and it is
+-- the only code that needs to know there are two.
 CREATE TABLE IF NOT EXISTS task_completions (
-  id                INT UNSIGNED NOT NULL AUTO_INCREMENT,
-  task_id           INT UNSIGNED NOT NULL,
-  completed_on      DATE         NOT NULL,
-  note              TEXT         NULL,
+  id           INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  task_id      INT UNSIGNED NOT NULL,
+  completed_on DATE         NOT NULL,
+  note         TEXT         NULL,
 
-  -- Set when the completion had a bill attached. SET NULL, not CASCADE:
-  -- deleting the invoice must not delete the fact that you did the job.
-  service_record_id INT UNSIGNED NULL,
+  -- ---- service columns, all NULL when you did it yourself --------------
+  -- Same shapes and same rules as log_updates: SET NULL on the vendor, a
+  -- snapshot name that outlives them, NULL cost meaning "not recorded"
+  -- rather than free, and 1..5 with NULL for unrated.
+  vendor_id    INT UNSIGNED NULL,
+  vendor_name  VARCHAR(160) NULL,
+  cost         DECIMAL(10,2) NULL,
+  rating       TINYINT UNSIGNED NULL,
 
-  created_at        DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  created_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
   PRIMARY KEY (id),
   KEY idx_task_date (task_id, completed_on),
-  CONSTRAINT fk_completions_task FOREIGN KEY (task_id)
-    REFERENCES maintenance_tasks(id) ON DELETE CASCADE
+  -- The Service view's second source: paid completions, newest first.
+  KEY idx_paid (completed_on),
+  KEY idx_vendor (vendor_id),
+  CONSTRAINT fk_completions_task   FOREIGN KEY (task_id)   REFERENCES maintenance_tasks(id) ON DELETE CASCADE,
+  CONSTRAINT fk_completions_vendor FOREIGN KEY (vendor_id) REFERENCES vendors(id)           ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 
 
 -- ---------------------------------------------------- task_reminder_sends
@@ -400,104 +485,16 @@ CREATE TABLE IF NOT EXISTS task_reminder_sends (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
--- ----------------------------------------------------------------- vendors
 
-CREATE TABLE IF NOT EXISTS vendors (
-  id              INT UNSIGNED NOT NULL AUTO_INCREMENT,
-  property_id     INT UNSIGNED NOT NULL DEFAULT 1,
-
-  name            VARCHAR(160) NOT NULL,
-  phone           VARCHAR(40)  NULL,
-  email           VARCHAR(255) NULL,
-  notes           TEXT         NULL,
-
-  -- NULL = use the average of this vendor's rated service records.
-  -- Non-NULL = "I've decided", and the average is shown beside it rather than
-  -- replaced, so the override never hides what it is overriding.
-  --
-  -- There is no stored average. It is AVG() at read time over a handful of
-  -- rows per vendor; caching it would be a denormalization with a sync bug
-  -- attached and nothing to buy with it.
-  rating_override TINYINT UNSIGNED NULL,
-
-  created_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-  PRIMARY KEY (id),
-  KEY idx_name (name),
-  CONSTRAINT fk_vendors_property FOREIGN KEY (property_id) REFERENCES properties(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-
--- --------------------------------------------------------- service_records
-
-CREATE TABLE IF NOT EXISTS service_records (
-  id           INT UNSIGNED NOT NULL AUTO_INCREMENT,
-  property_id  INT UNSIGNED NOT NULL DEFAULT 1,
-  user_id      INT UNSIGNED NULL,              -- reserved, see issues.user_id
-
-  -- SET NULL, never CASCADE. Deleting a vendor MUST NOT delete your repair
-  -- history — that history is the thing the app is for.
-  vendor_id    INT UNSIGNED NULL,
-
-  -- A SNAPSHOT STRING, and the one place in this schema where a name is
-  -- stored rather than joined (§2.10). It is the deliberate opposite of the
-  -- tags table's foreign key, ten tables up: a room that gets renamed is the
-  -- same room and should follow, but a vendor that gets deleted is gone and
-  -- the 2023 invoice still has to say who sent it. Written on insert from
-  -- vendors.name; not kept in sync afterwards, because a rename there means
-  -- "they changed their name", not "this invoice came from someone else".
-  vendor_name  VARCHAR(160) NULL,
-
-  title        VARCHAR(200) NOT NULL,
-  description  TEXT         NULL,
-  performed_on DATE         NOT NULL,
-
-  -- NULL = not recorded, which is different from free. DECIMAL, never FLOAT:
-  -- money in binary floating point does not add up.
-  cost         DECIMAL(10,2) NULL,
-
-  -- 1..5 for THIS JOB. NULL = unrated. vendors' overall rating is the average
-  -- of these. Same NULL-means-unset rule as issues.severity.
-  rating       TINYINT UNSIGNED NULL,
-
-  -- "This work relates to that issue/task." Both optional, both SET NULL.
-  -- See issues.resolved_by_record_id for why the issue link is two columns
-  -- pointing opposite ways rather than one.
-  issue_id     INT UNSIGNED NULL,
-  task_id      INT UNSIGNED NULL,
-
-  created_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-  PRIMARY KEY (id),
-  KEY idx_performed (performed_on),
-  KEY idx_vendor (vendor_id),
-  KEY idx_issue (issue_id),
-  CONSTRAINT fk_records_property FOREIGN KEY (property_id) REFERENCES properties(id),
-  CONSTRAINT fk_records_vendor   FOREIGN KEY (vendor_id) REFERENCES vendors(id) ON DELETE SET NULL,
-  CONSTRAINT fk_records_issue    FOREIGN KEY (issue_id)  REFERENCES issues(id)  ON DELETE SET NULL,
-  CONSTRAINT fk_records_task     FOREIGN KEY (task_id)   REFERENCES maintenance_tasks(id) ON DELETE SET NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-
--- ------------------------------------------------------------- tag linkage
-
--- Four join tables, one per taggable thing (§2.1). All the same shape.
---
--- NOT one polymorphic taggables(item_type, item_id, tag_id) table. That form
--- cannot express a foreign key — the database could not cascade a deleted
--- issue's tag rows away, so orphan rows would accumulate silently and every
--- read would need a defensive join. Four small tables buy real cascades in
--- both directions: delete an issue and its tag links go; delete a tag and it
--- lifts off every item cleanly.
-
-CREATE TABLE IF NOT EXISTS issue_tags (
-  issue_id INT UNSIGNED NOT NULL,
+CREATE TABLE IF NOT EXISTS entry_tags (
+  entry_id INT UNSIGNED NOT NULL,
   tag_id   INT UNSIGNED NOT NULL,
-  PRIMARY KEY (issue_id, tag_id),
+  PRIMARY KEY (entry_id, tag_id),
   KEY idx_tag (tag_id),
-  CONSTRAINT fk_it_issue FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE,
-  CONSTRAINT fk_it_tag   FOREIGN KEY (tag_id)   REFERENCES tags(id)   ON DELETE CASCADE
+  CONSTRAINT fk_et_entry FOREIGN KEY (entry_id) REFERENCES log_entries(id) ON DELETE CASCADE,
+  CONSTRAINT fk_et_tag   FOREIGN KEY (tag_id)   REFERENCES tags(id)        ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 
 CREATE TABLE IF NOT EXISTS task_tags (
   task_id INT UNSIGNED NOT NULL,
@@ -506,15 +503,6 @@ CREATE TABLE IF NOT EXISTS task_tags (
   KEY idx_tag (tag_id),
   CONSTRAINT fk_tt_task FOREIGN KEY (task_id) REFERENCES maintenance_tasks(id) ON DELETE CASCADE,
   CONSTRAINT fk_tt_tag  FOREIGN KEY (tag_id)  REFERENCES tags(id)              ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE TABLE IF NOT EXISTS record_tags (
-  record_id INT UNSIGNED NOT NULL,
-  tag_id    INT UNSIGNED NOT NULL,
-  PRIMARY KEY (record_id, tag_id),
-  KEY idx_tag (tag_id),
-  CONSTRAINT fk_rt_record FOREIGN KEY (record_id) REFERENCES service_records(id) ON DELETE CASCADE,
-  CONSTRAINT fk_rt_tag    FOREIGN KEY (tag_id)    REFERENCES tags(id)            ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS vendor_tags (
@@ -540,12 +528,16 @@ CREATE TABLE IF NOT EXISTS media (
   -- ---- ownership: THREE NULLABLE FOREIGN KEYS, EXACTLY ONE SET ----------
   -- Not a polymorphic (owner_type, owner_id) pair, for the same reason the
   -- tag joins are not: polymorphic ownership cannot be a foreign key, so
-  -- deleting an issue would leave its photos behind as rows pointing at
+  -- deleting a log entry would leave its photos behind as rows pointing at
   -- nothing, and the files behind them would never be reaped. Two spare
   -- columns per row buys a real ON DELETE CASCADE.
-  issue_id          INT UNSIGNED NULL,   -- the issue's opening photo
-  issue_update_id   INT UNSIGNED NULL,   -- one check-in's photo
-  service_record_id INT UNSIGNED NULL,   -- batch: photos AND documents
+  --
+  -- completion_id is what lets an INVOICE hang off a maintenance completion.
+  -- The receipt for the annual HVAC service belongs beside the completion it
+  -- paid for, not beside a log entry that never existed.
+  entry_id          INT UNSIGNED NULL,   -- the log entry's opening photo
+  update_id         INT UNSIGNED NULL,   -- one update's photos and invoice
+  completion_id     INT UNSIGNED NULL,   -- a maintenance completion's receipt
 
   -- Generated, name-independent basename (16 hex chars). The uploaded
   -- filename never becomes a path — see lib/imageproc.php.
@@ -586,13 +578,13 @@ CREATE TABLE IF NOT EXISTS media (
   created_at        DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
   PRIMARY KEY (id),
-  KEY idx_issue (issue_id),
-  KEY idx_update (issue_update_id),
-  KEY idx_record (service_record_id),
+  KEY idx_entry (entry_id),
+  KEY idx_update (update_id),
+  KEY idx_completion (completion_id),
   KEY idx_status (status, locked_at),
-  CONSTRAINT fk_media_issue  FOREIGN KEY (issue_id)          REFERENCES issues(id)          ON DELETE CASCADE,
-  CONSTRAINT fk_media_update FOREIGN KEY (issue_update_id)   REFERENCES issue_updates(id)   ON DELETE CASCADE,
-  CONSTRAINT fk_media_record FOREIGN KEY (service_record_id) REFERENCES service_records(id) ON DELETE CASCADE
+  CONSTRAINT fk_media_entry      FOREIGN KEY (entry_id)      REFERENCES log_entries(id)      ON DELETE CASCADE,
+  CONSTRAINT fk_media_update     FOREIGN KEY (update_id)     REFERENCES log_updates(id)      ON DELETE CASCADE,
+  CONSTRAINT fk_media_completion FOREIGN KEY (completion_id) REFERENCES task_completions(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 

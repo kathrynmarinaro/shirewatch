@@ -12,7 +12,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/../lib/bootstrap.php';
 require_once __DIR__ . '/../lib/layout.php';
 require_once __DIR__ . '/../lib/vendors.php';
-require_once __DIR__ . '/../lib/records.php';
+require_once __DIR__ . '/../lib/service.php';
 require_once __DIR__ . '/../lib/render.php';
 
 require_login_page();
@@ -27,7 +27,7 @@ if (!$isNew && $vendor === null) {
     exit;
 }
 
-$jobs     = $vendor === null ? array() : records_list(array('vendor_id' => $vendor['id']));
+$jobs     = $vendor === null ? array() : service_list(array('vendor_id' => $vendor['id']));
 $workTags = tags_of_kind(TAG_WORK_TYPE);
 $selected = $vendor === null ? array() : array_column($vendor['tags'], 'id');
 
@@ -130,16 +130,21 @@ screen_head($isNew ? 'Add a vendor' : 'Vendor', page_menu());
     <?php if ($jobs === array()): ?>
       <p class="empty">Nothing logged against them yet.</p>
     <?php else: ?>
-      <?php /* Filled in automatically from the service records — there is no
-               control here to add one, deliberately. */ ?>
+      <?php /* Filled in automatically from wherever the work was logged —
+               a service update on a log entry, or a paid maintenance
+               completion. There is no control here to add one, deliberately:
+               the brief asks for this to be automatic, so one source of
+               truth. */ ?>
       <ul class="list">
         <?php foreach ($jobs as $job): ?>
           <li class="list-row">
             <div class="row-slide">
-              <a class="row-body" href="record.php?id=<?= (int) $job['id'] ?>">
+              <a class="row-body" href="<?= $job['source'] === 'log'
+                  ? 'entry.php?id=' . (int) $job['parent_id']
+                  : 'task.php?id=' . (int) $job['parent_id'] ?>">
                 <span class="row-text"><?= h($job['title']) ?></span>
                 <span class="row-sub">
-                  <?= h(fmt_date($job['performed_on'], 'j M Y')) ?>
+                  <?= h(fmt_date($job['on_date'], 'j M Y')) ?>
                   <?php $cost = render_cost($job['cost']); ?>
                   <?= $cost === '' ? '' : ' · ' . h($cost) ?>
                 </span>

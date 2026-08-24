@@ -1186,7 +1186,7 @@ h2 { font-size: 1.1rem; font-weight: 600; margin: 26px 0 10px; color: var(--head
   padding: 10px 0 10px 30px;
   min-height: var(--tap);
 }
-/* The node. Filled for maintenance, hollow for an issue follow-up — the two
+/* The node. Filled for maintenance, hollow for a log-entry follow-up — the two
    kinds are combined in this stream by design, so the shape is what tells you
    which you are looking at without reading the label. */
 .timeline-item::before {
@@ -1200,8 +1200,15 @@ h2 { font-size: 1.1rem; font-weight: 600; margin: 26px 0 10px; color: var(--head
   background: var(--accent);
   box-shadow: 0 0 0 3px var(--bg);
 }
-.timeline-item.is-issue::before { background: var(--bg); border: 2px solid var(--accent); }
+.timeline-item.is-entry::before { background: var(--bg); border: 2px solid var(--accent); }
 .timeline-item.is-projected::before { background: var(--border); }
+
+/* A SERVICE UPDATE ON AN ENTRY'S OWN TIMELINE. Money changed hands here, so
+   the node is solid and darker than the notes around it: scrolling a long
+   entry, the visits are the rows you are looking for. Not a different list —
+   the merge exists so a repair and the observations around it read as one
+   story — just a heavier beat in the same one. */
+.timeline-item.is-service::before { background: var(--accent-dark); }
 
 .timeline-title { display: block; color: var(--ink); font-weight: 600; text-decoration: none; }
 .timeline-sub { display: block; font-size: 0.82rem; color: var(--slate); margin-top: 2px; }

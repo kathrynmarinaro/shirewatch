@@ -68,7 +68,7 @@ function resolveRoot(root) {
  *   </label>
  *
  *   attachUpload('#add-photo', {
- *     ownerType: 'issue_update',
+ *     ownerType: 'update',
  *     ownerId:   41,
  *     capture:   'single',
  *     onDone:    (created) => renderGallery(created),

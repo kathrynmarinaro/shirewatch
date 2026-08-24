@@ -128,7 +128,7 @@ function confirmDelete(name, usage) {
 
     const parts = [];
     if (usage) {
-      const labels = { issue: 'issue', task: 'task', record: 'record', vendor: 'vendor' };
+      const labels = { issue: 'entry', task: 'task', record: 'record', vendor: 'vendor' };
       Object.entries(usage).forEach(([key, count]) => {
         if (count > 0) {
           parts.push(`${count} ${labels[key]}${count === 1 ? '' : 's'}`);

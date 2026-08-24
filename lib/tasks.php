@@ -40,6 +40,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/tags.php';
+require_once __DIR__ . '/vendors.php';
 
 /** The columns recur_next_after() reads, pulled out of a task row. */
 function task_rule(array $task): array
@@ -113,7 +114,7 @@ function tasks_list(array $filters = array()): array
         $where[] = '1 = 1';
     }
 
-    /* AND-ed, like the issue list — see lib/issues.php for the argument. */
+    /* AND-ed, like the Log list — see lib/log.php for the argument. */
     $tagIds = array_values(array_filter(array_map('intval', $filters['tag_ids'] ?? array())));
     $join   = '';
     $group  = '';
@@ -151,11 +152,19 @@ function tasks_decorate(array $tasks): array
 /**
  * The completion history, newest first.
  *
- * NEWEST FIRST, unlike an issue's timeline. An issue's entries are a
+ * NEWEST FIRST, unlike a log entry's timeline. A log entry's updates are a
  * progression that has to be read in order; a task's are a log, and the
  * question you ask of it is "when did I last do this", which is the top row.
  *
- * @return list<array{id:int, completed_on:string, note:string, service_record_id:?int}>
+ * A completion CARRIES THE SERVICE COLUMNS. Routine paid work — the annual
+ * HVAC service, the septic pump-out — is not a problem that got fixed; it is
+ * a scheduled job that happened and cost money. Filing it as a log entry would
+ * mean inventing a problem that never existed, so the vendor, the cost and the
+ * rating live here instead. lib/service.php is what puts the two back together
+ * for the "what did we pay" question.
+ *
+ * @return list<array{id:int, completed_on:string, note:string,
+ *                    vendor_id:?int, vendor_name:string, cost:?string, rating:?int}>
  */
 function task_completions(int $taskId, int $limit = 50): array
 {
@@ -167,10 +176,13 @@ function task_completions(int $taskId, int $limit = 50): array
     $out = array();
     foreach ($rows as $row) {
         $out[] = array(
-            'id'                => (int) $row['id'],
-            'completed_on'      => (string) $row['completed_on'],
-            'note'              => $row['note'] !== null ? (string) $row['note'] : '',
-            'service_record_id' => $row['service_record_id'] !== null ? (int) $row['service_record_id'] : null,
+            'id'           => (int) $row['id'],
+            'completed_on' => (string) $row['completed_on'],
+            'note'         => $row['note'] !== null ? (string) $row['note'] : '',
+            'vendor_id'    => $row['vendor_id'] !== null ? (int) $row['vendor_id'] : null,
+            'vendor_name'  => $row['vendor_name'] !== null ? (string) $row['vendor_name'] : '',
+            'cost'         => $row['cost'] !== null ? (string) $row['cost'] : null,
+            'rating'       => $row['rating'] !== null ? (int) $row['rating'] : null,
         );
     }
     return $out;
@@ -315,16 +327,37 @@ function task_complete(int $id, array $data = array()): ?string
     }
 
     try {
+        /* The vendor NAME is snapshotted at write time, exactly as log_updates
+         * does it: deleting a vendor later nulls the link and leaves the name,
+         * so the receipt still says who did the work. */
+        $vendorId   = isset($data['vendor_id']) && (int) $data['vendor_id'] > 0
+            ? (int) $data['vendor_id'] : null;
+        $vendorName = null;
+
+        if ($vendorId !== null) {
+            $vendor = vendor_get($vendorId);
+            if ($vendor === null) {
+                $vendorId = null;
+            } else {
+                $vendorName = $vendor['name'];
+            }
+        }
+        if ($vendorName === null) {
+            $vendorName = vendor_clean($data['vendor_name'] ?? null, 160);
+        }
+
         q(
-            'INSERT INTO task_completions (task_id, completed_on, note, service_record_id)
-             VALUES (?, ?, ?, ?)',
+            'INSERT INTO task_completions
+               (task_id, completed_on, note, vendor_id, vendor_name, cost, rating)
+             VALUES (?, ?, ?, ?, ?, ?, ?)',
             array(
                 $id,
                 $completedOn,
                 task_clean_text($data['note'] ?? null),
-                isset($data['service_record_id']) && (int) $data['service_record_id'] > 0
-                    ? (int) $data['service_record_id']
-                    : null,
+                $vendorId,
+                $vendorName,
+                service_clean_cost($data['cost'] ?? null),
+                vendor_clean_rating($data['rating'] ?? null),
             )
         );
 

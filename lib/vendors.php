@@ -18,12 +18,19 @@
  * one.
  *
  * ---------------------------------------------------------------------------
- * WORK HISTORY IS NOT MAINTAINED BY HAND.
+ * WORK HISTORY IS NOT MAINTAINED BY HAND, AND IT COMES FROM TWO PLACES.
  * ---------------------------------------------------------------------------
  *
- * The brief asks for it to be "automatically populated from linked service
- * records", so there is no vendor_jobs table and no way to add a job to a
- * vendor except by logging the service record. One source of truth.
+ * The brief asks for it to be "automatically populated", so there is no
+ * vendor_jobs table and no way to add a job to a vendor except by logging the
+ * work where it actually happened:
+ *
+ *   log_updates      of kind 'service' — the visit that fixed something
+ *   task_completions with a vendor or a cost — routine paid work
+ *
+ * Both count toward the job count and the average rating. A plumber who has
+ * only ever done your annual backflow test has a rating here, which they would
+ * not have had when "service" was a table of its own.
  */
 
 declare(strict_types=1);
@@ -124,11 +131,16 @@ function vendor_rating(int $id): array
 }
 
 /**
- * The same, batched. One query for the aggregates, one for the overrides.
+ * The same, batched, across BOTH sources.
  *
- * COUNT(rating) counts only non-NULL, which is the distinction that matters:
- * a vendor with four jobs and no ratings has an average of NULL, not zero
- * (schema.sql). AVG() ignores NULLs for the same reason.
+ * COUNT(rating) counts only non-NULL, which is the distinction that matters: a
+ * vendor with four jobs and no ratings has an average of NULL, not zero. AVG()
+ * ignores NULLs for the same reason.
+ *
+ * Two queries summed in PHP rather than one SQL UNION, because a weighted
+ * average has to be rebuilt from counts anyway — averaging two averages is
+ * wrong the moment the two sides have different job counts, which they almost
+ * always do.
  *
  * @param list<int> $ids
  * @return array<int, array>
@@ -141,28 +153,51 @@ function vendor_ratings_for(array $ids): array
     }
     $holes = implode(', ', array_fill(0, count($ids), '?'));
 
-    $rows = q(
-        "SELECT vendor_id,
-                COUNT(*)       AS jobs,
-                COUNT(rating)  AS rated_jobs,
-                AVG(rating)    AS average,
-                SUM(cost)      AS total_cost
-           FROM service_records
-          WHERE vendor_id IN ($holes)
-          GROUP BY vendor_id",
-        $ids
-    )->fetchAll() ?: array();
-
     $out = array();
     foreach ($ids as $id) {
         $out[$id] = vendor_empty_rating();
     }
-    foreach ($rows as $row) {
-        $id = (int) $row['vendor_id'];
-        $out[$id]['jobs']       = (int) $row['jobs'];
-        $out[$id]['rated_jobs'] = (int) $row['rated_jobs'];
-        $out[$id]['average']    = $row['rated_jobs'] > 0 ? round((float) $row['average'], 2) : null;
-        $out[$id]['total_cost'] = $row['total_cost'] !== null ? (string) $row['total_cost'] : null;
+
+    /* Carried as sums so the two sources can be combined without averaging
+     * averages. */
+    $ratingSum = array();
+    foreach ($ids as $id) {
+        $ratingSum[$id] = 0.0;
+    }
+
+    foreach (array(
+        "SELECT vendor_id, COUNT(*) AS jobs, COUNT(rating) AS rated,
+                SUM(rating) AS rating_sum, SUM(cost) AS total_cost
+           FROM log_updates
+          WHERE kind = 'service' AND vendor_id IN ($holes)
+          GROUP BY vendor_id",
+        "SELECT vendor_id, COUNT(*) AS jobs, COUNT(rating) AS rated,
+                SUM(rating) AS rating_sum, SUM(cost) AS total_cost
+           FROM task_completions
+          WHERE vendor_id IN ($holes)
+          GROUP BY vendor_id",
+    ) as $sql) {
+        foreach (q($sql, $ids)->fetchAll() ?: array() as $row) {
+            $id = (int) $row['vendor_id'];
+            if (!isset($out[$id])) {
+                continue;
+            }
+            $out[$id]['jobs']       += (int) $row['jobs'];
+            $out[$id]['rated_jobs'] += (int) $row['rated'];
+            $ratingSum[$id]         += (float) $row['rating_sum'];
+
+            if ($row['total_cost'] !== null) {
+                $out[$id]['total_cost'] = (string) (
+                    (float) ($out[$id]['total_cost'] ?? 0) + (float) $row['total_cost']
+                );
+            }
+        }
+    }
+
+    foreach ($ids as $id) {
+        $out[$id]['average'] = $out[$id]['rated_jobs'] > 0
+            ? round($ratingSum[$id] / $out[$id]['rated_jobs'], 2)
+            : null;
     }
 
     $overrides = q("SELECT id, rating_override FROM vendors WHERE id IN ($holes)", $ids)->fetchAll() ?: array();
@@ -210,9 +245,9 @@ function vendor_save(?int $id, array $data): int
 /**
  * Delete a vendor. THEIR WORK HISTORY SURVIVES.
  *
- * service_records.vendor_id is ON DELETE SET NULL and vendor_name is a
- * snapshot string written on insert, so the 2023 invoice still says who sent
- * it (schema.sql). This is the deliberate opposite of the tag rename, ten
+ * vendor_id is ON DELETE SET NULL on both log_updates and task_completions,
+ * and vendor_name is a snapshot string written on insert, so the 2023 invoice
+ * still says who sent it (schema.sql). This is the deliberate opposite of the tag rename, ten
  * tables away — a room that gets renamed is the same room; a vendor that gets
  * deleted is gone but the money you paid them is not.
  */
@@ -239,4 +274,26 @@ function vendor_clean_rating($raw): ?int
     }
     $n = (int) $raw;
     return ($n >= 1 && $n <= 5) ? $n : null;
+}
+
+/**
+ * A cost, or NULL. Shared by log_updates and task_completions, which are the
+ * two places money is recorded.
+ *
+ * NULL IS "NOT RECORDED", WHICH IS NOT THE SAME AS FREE (schema.sql). An empty
+ * field stores NULL and a typed 0 stores 0.00 — the second is a claim that the
+ * work cost nothing, and only one of them should render as $0.
+ */
+function service_clean_cost($raw): ?string
+{
+    if ($raw === null || trim((string) $raw) === '') {
+        return null;
+    }
+    /* Strip whatever a phone keyboard put in — currency symbols, thousands
+     * separators, stray spaces — before deciding it is not a number. */
+    $clean = preg_replace('/[^0-9.\\-]/', '', (string) $raw) ?? '';
+    if ($clean === '' || !is_numeric($clean)) {
+        return null;
+    }
+    return number_format(max(0, (float) $clean), 2, '.', '');
 }

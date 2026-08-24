@@ -7,14 +7,14 @@
  * and a reload does not drop you back to everything. A JS-only filter has none
  * of that and is not meaningfully faster on a list this size.
  *
- * assets/issues.js adds swipe-to-delete and the capture flow on top.
+ * assets/log.js adds swipe-to-delete and the capture flow on top.
  */
 
 declare(strict_types=1);
 
 require_once __DIR__ . '/../lib/bootstrap.php';
 require_once __DIR__ . '/../lib/layout.php';
-require_once __DIR__ . '/../lib/issues.php';
+require_once __DIR__ . '/../lib/log.php';
 require_once __DIR__ . '/../lib/render.php';
 
 require_login_page();
@@ -28,24 +28,24 @@ $today = sw_today();
  * buries the three you can do something about. */
 $statusParam = (string) ($_GET['status'] ?? '');
 if ($statusParam === 'all') {
-    $statuses = issue_statuses();
-} elseif (in_array($statusParam, issue_statuses(), true)) {
+    $statuses = entry_statuses();
+} elseif (in_array($statusParam, entry_statuses(), true)) {
     $statuses = array($statusParam);
 } else {
-    $statuses = issue_open_statuses();
+    $statuses = entry_open_statuses();
 }
 
 $tagIds = array_values(array_filter(array_map('intval', (array) ($_GET['tag'] ?? array()))));
 $search = trim((string) ($_GET['q'] ?? ''));
 
-$issues = issues_list(array(
+$entries = entries_list(array(
     'status'   => $statuses,
     'tag_ids'  => $tagIds,
     'search'   => $search,
 ));
 
 /** A URL with one filter flipped, preserving everything else. */
-function issues_url(array $overrides = array()): string
+function log_url(array $overrides = array()): string
 {
     $params = array();
     if (($_GET['status'] ?? '') !== '') { $params['status'] = $_GET['status']; }
@@ -64,24 +64,24 @@ function issues_url(array $overrides = array()): string
     }
 
     $qs = http_build_query($params);
-    return 'issues.php' . ($qs === '' ? '' : '?' . $qs);
+    return 'log.php' . ($qs === '' ? '' : '?' . $qs);
 }
 
 /** The same URL with one tag toggled in or out. */
-function issues_tag_url(int $tagId): string
+function log_tag_url(int $tagId): string
 {
     $current = array_values(array_filter(array_map('intval', (array) ($_GET['tag'] ?? array()))));
     $next = in_array($tagId, $current, true)
         ? array_values(array_diff($current, array($tagId)))
         : array_merge($current, array($tagId));
-    return issues_url(array('tag' => $next));
+    return log_url(array('tag' => $next));
 }
 
-page_head('Issues', 'issues');
+page_head('Issues', 'log');
 screen_head('Issues', page_menu());
 ?>
 
-  <form class="composer" method="get" action="issues.php">
+  <form class="composer" method="get" action="log.php">
     <?php foreach ($tagIds as $tagId): ?>
       <input type="hidden" name="tag[]" value="<?= (int) $tagId ?>">
     <?php endforeach; ?>
@@ -97,49 +97,49 @@ screen_head('Issues', page_menu());
            on, and burying it among twenty room chips hides the fact that the
            list is showing you a subset. */ ?>
   <div class="filterbar" role="group" aria-label="Status">
-    <a class="chip<?= $statusParam === '' ? ' is-on' : '' ?>" href="<?= h(issues_url(array('status' => null))) ?>">Open</a>
-    <?php foreach (issue_statuses() as $status): ?>
+    <a class="chip<?= $statusParam === '' ? ' is-on' : '' ?>" href="<?= h(log_url(array('status' => null))) ?>">Open</a>
+    <?php foreach (entry_statuses() as $status): ?>
       <a class="chip<?= $statusParam === $status ? ' is-on' : '' ?>"
-         href="<?= h(issues_url(array('status' => $status))) ?>"><?= h(issue_status_label($status)) ?></a>
+         href="<?= h(log_url(array('status' => $status))) ?>"><?= h(entry_status_label($status)) ?></a>
     <?php endforeach; ?>
-    <a class="chip<?= $statusParam === 'all' ? ' is-on' : '' ?>" href="<?= h(issues_url(array('status' => 'all'))) ?>">All</a>
+    <a class="chip<?= $statusParam === 'all' ? ' is-on' : '' ?>" href="<?= h(log_url(array('status' => 'all'))) ?>">All</a>
   </div>
 
-  <?= render_filters($tagIds, 'issues_tag_url') ?>
+  <?= render_filters($tagIds, 'log_tag_url') ?>
 
 <?php if ($tagIds !== array() || $search !== '' || $statusParam !== ''): ?>
   <p class="hint">
-    <?= count($issues) ?> match<?= count($issues) === 1 ? '' : 'es' ?>.
-    <a class="link-btn" href="issues.php">Clear filters</a>
+    <?= count($entries) ?> match<?= count($entries) === 1 ? '' : 'es' ?>.
+    <a class="link-btn" href="log.php">Clear filters</a>
   </p>
 <?php endif; ?>
 
-<?php if ($issues === array()): ?>
+<?php if ($entries === array()): ?>
   <p class="empty">
     <?= $tagIds !== array() || $search !== '' ? 'Nothing matches those filters.' : 'Nothing logged yet.' ?>
   </p>
 <?php else: ?>
-  <ul class="list" id="issue-list">
-  <?php foreach ($issues as $issue): ?>
-    <li class="list-row" data-id="<?= (int) $issue['id'] ?>">
+  <ul class="list" id="log-list">
+  <?php foreach ($entries as $entry): ?>
+    <li class="list-row" data-id="<?= (int) $entry['id'] ?>">
       <div class="row-slide">
-        <a class="row-body" href="issue.php?id=<?= (int) $issue['id'] ?>">
-          <span class="row-text"><?= h($issue['title']) ?></span>
+        <a class="row-body" href="entry.php?id=<?= (int) $entry['id'] ?>">
+          <span class="row-text"><?= h($entry['title']) ?></span>
           <span class="row-sub">
-            <?php $names = tag_names($issue['tags']); ?>
+            <?php $names = tag_names($entry['tags']); ?>
             <?= $names === array() ? 'Untagged' : h(implode(' · ', $names)) ?>
-            <?php if ($issue['next_check_on'] !== null): ?>
-              · <span class="<?= $issue['next_check_on'] <= $today ? 'is-overdue' : '' ?>">Check <?= h(fmt_relative_due($issue['next_check_on'], $today)) ?></span>
+            <?php if ($entry['next_check_on'] !== null): ?>
+              · <span class="<?= $entry['next_check_on'] <= $today ? 'is-overdue' : '' ?>">Check <?= h(fmt_relative_due($entry['next_check_on'], $today)) ?></span>
             <?php endif; ?>
-            <?php if ($issue['photo_count'] > 0): ?>
-              · <?= (int) $issue['photo_count'] ?> photo<?= $issue['photo_count'] === 1 ? '' : 's' ?>
+            <?php if ($entry['photo_count'] > 0): ?>
+              · <?= (int) $entry['photo_count'] ?> photo<?= $entry['photo_count'] === 1 ? '' : 's' ?>
             <?php endif; ?>
           </span>
         </a>
         <?php /* NULL severity renders NOTHING — not a grey pill, which would
                  put something that looks like data on every issue where none
                  was recorded (CLAUDE.md). */ ?>
-        <?= render_severity($issue['severity']) ?>
+        <?= render_severity($entry['severity']) ?>
         <?= render_row_edit() ?>
       </div>
     </li>
@@ -147,8 +147,8 @@ screen_head('Issues', page_menu());
   </ul>
 <?php endif; ?>
 
-<?= render_fab('issue.php?new=1', 'Log an issue') ?>
+<?= render_fab('entry.php?new=1', 'Log something') ?>
 
-<script type="module" src="<?= asset('assets/issues.js') ?>"></script>
+<script type="module" src="<?= asset('assets/log.js') ?>"></script>
 <?php
-page_foot('issues');
+page_foot('log');

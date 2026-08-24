@@ -97,12 +97,12 @@ if (timeline) {
 
     const item = document.createElement('li');
     item.className = 'timeline-item'
-      + (row.kind === 'issue' ? ' is-issue' : '')
+      + (row.kind === 'entry' ? ' is-entry' : '')
       + (row.projected ? ' is-projected' : '');
 
     const link = document.createElement('a');
     link.className = 'timeline-title';
-    link.href = (row.kind === 'issue' ? 'issue.php?id=' : 'task.php?id=') + row.id;
+    link.href = (row.kind === 'entry' ? 'entry.php?id=' : 'task.php?id=') + row.id;
     /* textContent — a title is user-entered and this is where it re-enters the
        DOM after the server escaped it for the first page. */
     link.textContent = row.title;
@@ -110,7 +110,7 @@ if (timeline) {
 
     const sub = document.createElement('span');
     sub.className = 'timeline-sub';
-    sub.textContent = (row.kind === 'issue' ? 'Check back' : 'Maintenance')
+    sub.textContent = (row.kind === 'entry' ? 'Check back' : 'Maintenance')
       + (row.projected ? ' · projected' : '');
     item.appendChild(sub);
 

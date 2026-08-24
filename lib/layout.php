@@ -50,7 +50,7 @@ function nav_tabs(): array
 {
     return array(
         'dashboard'   => array('label' => 'Dashboard',   'href' => 'index.php'),
-        'issues'      => array('label' => 'Issues',      'href' => 'issues.php'),
+        'log'         => array('label' => 'Log',         'href' => 'log.php'),
         'maintenance' => array('label' => 'Maintenance', 'href' => 'maintenance.php'),
         'vendors'     => array('label' => 'Vendors',     'href' => 'vendors.php'),
     );
@@ -174,7 +174,7 @@ function page_head(string $title, ?string $tab = null): void
 function menu_items(): array
 {
     return array(
-        array('label' => 'Service History', 'href' => 'history.php'),
+        array('label' => 'Service',         'href' => 'service.php'),
         array('label' => 'Rooms & Tags',    'href' => 'tags.php'),
         array('label' => 'Export data',     'href' => 'api/export.php'),
         array('label' => 'Log out',         'href' => 'logout.php'),

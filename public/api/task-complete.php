@@ -1,5 +1,6 @@
 <?php
-/* POST /api/task-complete.php   {id, completed_on?, note?, service_record_id?}
+/* POST /api/task-complete.php
+ *   {id, completed_on?, note?, vendor_id?, vendor_name?, cost?, rating?}
  * → {ok: true, next_due_on: "2026-11-19", task: {...}}
  *
  * ---------------------------------------------------------------------------

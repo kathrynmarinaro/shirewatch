@@ -1,27 +1,41 @@
-/* One issue: saving the header, adding check-ins, attaching photos.
+/* One log entry: saving the header, adding updates, attaching photos.
  *
  * ---------------------------------------------------------------------------
  * SAVE FIRST, THEN PHOTOS — AND THE UI HAS TO SAY SO.
  * ---------------------------------------------------------------------------
  *
  * api/upload.php refuses an owner row that does not exist, so a brand-new
- * issue has nothing for a photo to attach to until it has been saved once.
+ * entry has nothing for a photo to attach to until it has been saved once.
  * Rather than hiding that, the photo controls are disabled until there is an
  * id and are enabled the moment there is one.
  *
  * The alternative — buffering the files in the browser and posting them after
  * the save — means holding several megabytes in a phone's memory across a
- * request that can fail, and then having to explain that the issue saved but
+ * request that can fail, and then having to explain that the entry saved but
  * the photos did not.
  *
  * ---------------------------------------------------------------------------
- * A CHECK-IN IS CREATED BEFORE ITS PHOTO, FOR THE SAME REASON.
+ * AN UPDATE IS CREATED BEFORE ITS PHOTO, FOR THE SAME REASON.
  * ---------------------------------------------------------------------------
  *
- * Photos attach to the issue_updates row, not to the issue, so the timeline
+ * Photos attach to the log_updates row, not to the entry, so the timeline
  * keeps each photo beside the note it belongs to. Tapping "Add photo" with an
- * unsaved check-in therefore submits the check-in first and then opens the
- * file picker.
+ * unsaved update therefore submits the update first and then opens the file
+ * picker.
+ *
+ * ---------------------------------------------------------------------------
+ * ONE FORM, TWO KINDS OF UPDATE.
+ * ---------------------------------------------------------------------------
+ *
+ * A note is something you observed; a service is somebody being paid. The
+ * chips flip a hidden input and reveal the money fields — they do not swap in
+ * a second form. Two forms would mean two submit paths, two photo buttons and
+ * a decision to make before you have started typing, when in practice you
+ * often find out it was a service halfway through writing the note.
+ *
+ * The service fields are only READ when the service chip is on. Switching back
+ * to Note leaves whatever was typed in the DOM, and sending it would file a
+ * plumber's invoice against an observation because you tapped a chip twice.
  */
 
 import { apiPost, ApiError } from './api.js';
@@ -30,21 +44,21 @@ import { attachUpload } from './upload.js';
 import { attachLightbox } from './lightbox.js';
 import { showSnackbar } from './swipe.js';
 
-const form = document.getElementById('issue-form');
-const saved = document.getElementById('issue-saved');
+const form = document.getElementById('entry-form');
+const saved = document.getElementById('entry-saved');
 const pill = document.getElementById('queue-pill');
 const pillText = document.getElementById('queue-text');
 
 /* The id lives in one place — the form's data-id — and everything reads it
    from there. A module-level `let currentId` would be a second copy that has
    to be kept in step with the DOM the server rendered. */
-function issueId() {
+function entryId() {
   return Number(form?.dataset.id || 0);
 }
 
-attachTagField('#issue-tags');
-attachLightbox('#issue-photos');
-attachLightbox('#issue-timeline');
+attachTagField('#entry-tags');
+attachLightbox('#entry-photos');
+attachLightbox('#entry-timeline');
 
 function setPill(text) {
   if (!pill) { return; }
@@ -57,7 +71,7 @@ function explain(error) {
   if (!(error instanceof ApiError)) { return 'Something went wrong.'; }
   switch (error.code) {
     case 'empty_title':  return 'Give it a title first.';
-    case 'not_found':    return 'This issue has been deleted.';
+    case 'not_found':    return 'This entry has been deleted.';
     case 'unauthorized': return 'Your session expired. Reload and sign in again.';
     case 'network_unreachable': return 'No connection.';
     default:             return 'Something went wrong.';
@@ -72,7 +86,7 @@ if (form) {
     const data = new FormData(form);
 
     const payload = {
-      id: issueId() || undefined,
+      id: entryId() || undefined,
       title: String(data.get('title') || ''),
       description: String(data.get('description') || ''),
       noticed_on: String(data.get('noticed_on') || ''),
@@ -82,17 +96,17 @@ if (form) {
     };
 
     try {
-      const issue = await apiPost('api/issue-save.php', payload);
-      const wasNew = !issueId();
-      form.dataset.id = String(issue.id);
+      const entry = await apiPost('api/entry-save.php', payload);
+      const wasNew = !entryId();
+      form.dataset.id = String(entry.id);
       enablePhotoControls();
 
       if (wasNew) {
-        /* Replace rather than push: the "new issue" URL is not somewhere the
+        /* Replace rather than push: the "new entry" URL is not somewhere the
            back button should return to, because going back to it and saving
-           again would create a second issue. */
-        window.history.replaceState({}, '', `issue.php?id=${issue.id}`);
-        /* A new issue has no timeline section rendered, and building one in JS
+           again would create a second entry. */
+        window.history.replaceState({}, '', `entry.php?id=${entry.id}`);
+        /* A new entry has no timeline section rendered, and building one in JS
            would be a second implementation of the server's template. Reload
            once, here only, so the rest of the screen exists. */
         window.location.reload();
@@ -109,13 +123,45 @@ if (form) {
   });
 }
 
+/* ---- note or service --------------------------------------------------- */
+
+const updateForm = document.getElementById('update-form');
+const kindBar = document.getElementById('update-kind');
+const kindInput = updateForm?.querySelector('input[name="kind"]');
+
+function currentKind() {
+  return String(kindInput?.value || 'note');
+}
+
+function setKind(kind) {
+  if (kindInput) { kindInput.value = kind; }
+
+  kindBar?.querySelectorAll('[data-kind]').forEach((chip) => {
+    const on = chip.dataset.kind === kind;
+    chip.classList.toggle('is-on', on);
+    chip.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+
+  updateForm?.querySelectorAll('[data-kind-fields]').forEach((block) => {
+    block.hidden = block.dataset.kindFields !== kind;
+  });
+}
+
+if (kindBar) {
+  kindBar.addEventListener('click', (event) => {
+    const chip = event.target.closest('[data-kind]');
+    if (chip) { setKind(chip.dataset.kind); }
+  });
+  setKind(currentKind());
+}
+
 /* ---- photos ------------------------------------------------------------ */
 
-/* The photo control is attached LAZILY, against a check-in that exists.
+/* The photo control is attached LAZILY, against an update that exists.
  *
- * attachUpload() needs a real owner id, and until you have written a check-in
+ * attachUpload() needs a real owner id, and until you have written an update
  * there is nothing for the photo to belong to. So the first tap on "Add photo"
- * creates the check-in, attaches the uploader to it, and then opens the file
+ * creates the update, attaches the uploader to it, and then opens the file
  * picker the tap was meant for. Subsequent taps go straight through.
  *
  * The click has to be intercepted BEFORE the OS file sheet opens — once it is
@@ -123,19 +169,19 @@ if (form) {
  */
 let photoDetach = null;
 
-const checkinPhotoLabel = document.getElementById('checkin-photo');
-if (checkinPhotoLabel) {
-  const fileInput = checkinPhotoLabel.querySelector('input[type="file"]');
+const updatePhotoLabel = document.getElementById('update-photo');
+if (updatePhotoLabel) {
+  const fileInput = updatePhotoLabel.querySelector('input[type="file"]');
 
-  checkinPhotoLabel.addEventListener('click', async (event) => {
+  updatePhotoLabel.addEventListener('click', async (event) => {
     if (photoDetach) { return; }        // already wired; let the tap through
     event.preventDefault();
 
-    const updateId = await submitCheckin({ silent: true });
+    const updateId = await submitUpdate({ silent: true });
     if (!updateId) { return; }
 
-    photoDetach = attachUpload(checkinPhotoLabel, {
-      ownerType: 'issue_update',
+    photoDetach = attachUpload(updatePhotoLabel, {
+      ownerType: 'update',
       ownerId: updateId,
       capture: 'single',
       onProgress: setPill,
@@ -145,27 +191,38 @@ if (checkinPhotoLabel) {
   });
 }
 
-/** A new issue has no check-in form until it has been saved and reloaded. */
+/** A new entry has no update form until it has been saved and reloaded. */
 function enablePhotoControls() {
-  const section = document.getElementById('checkin');
-  if (section) { section.hidden = !issueId(); }
+  const section = document.getElementById('update-add');
+  if (section) { section.hidden = !entryId(); }
 }
 
-/* ---- check-ins --------------------------------------------------------- */
+/* ---- updates ----------------------------------------------------------- */
 
-const checkinForm = document.getElementById('checkin-form');
+async function submitUpdate({ silent = false } = {}) {
+  if (!updateForm) { return 0; }
+  const data = new FormData(updateForm);
+  const kind = currentKind();
 
-async function submitCheckin({ silent = false } = {}) {
-  if (!checkinForm) { return 0; }
-  const data = new FormData(checkinForm);
+  const payload = {
+    entry_id: Number(updateForm.dataset.entryId),
+    kind: kind,
+    noted_on: String(data.get('noted_on') || ''),
+    severity: String(data.get('severity') || ''),
+    note: String(data.get('note') || ''),
+  };
+
+  if (kind === 'service') {
+    payload.vendor_id = Number(data.get('vendor_id') || 0);
+    payload.vendor_name = String(data.get('vendor_name') || '');
+    /* Sent as typed. An empty cost is "not recorded", which the server stores
+       as NULL — turning it into 0 here would say the plumber came free. */
+    payload.cost = String(data.get('cost') || '');
+    payload.rating = String(data.get('rating') || '');
+  }
 
   try {
-    const result = await apiPost('api/issue-update.php', {
-      issue_id: Number(checkinForm.dataset.issueId),
-      noted_on: String(data.get('noted_on') || ''),
-      severity: String(data.get('severity') || ''),
-      note: String(data.get('note') || ''),
-    });
+    const result = await apiPost('api/entry-update.php', payload);
     if (!silent) { window.location.reload(); }
     return result.id;
   } catch (error) {
@@ -174,24 +231,24 @@ async function submitCheckin({ silent = false } = {}) {
   }
 }
 
-if (checkinForm) {
-  checkinForm.addEventListener('submit', (event) => {
+if (updateForm) {
+  updateForm.addEventListener('submit', (event) => {
     event.preventDefault();
-    submitCheckin();
+    submitUpdate();
   });
 }
 
 /* ---- status ------------------------------------------------------------ */
 
-const statusBar = document.getElementById('issue-status');
+const statusBar = document.getElementById('entry-status');
 if (statusBar) {
   statusBar.addEventListener('click', async (event) => {
     const button = event.target.closest('[data-status]');
     if (!button) { return; }
 
     try {
-      await apiPost('api/issue-status.php', {
-        id: issueId(),
+      await apiPost('api/entry-status.php', {
+        id: entryId(),
         status: button.dataset.status,
       });
       statusBar.querySelectorAll('[data-status]').forEach((chip) => {
@@ -206,11 +263,11 @@ if (statusBar) {
 
 /* ---- delete ------------------------------------------------------------ */
 
-const deleteButton = document.getElementById('issue-delete');
+const deleteButton = document.getElementById('entry-delete');
 if (deleteButton) {
   deleteButton.addEventListener('click', () => {
-    const timeline = document.getElementById('issue-timeline');
-    const entries = timeline ? timeline.children.length : 0;
+    const timeline = document.getElementById('entry-timeline');
+    const updates = timeline ? timeline.children.length : 0;
     const photos = document.querySelectorAll('.gallery-item').length;
 
     /* Say what is actually lost. "Are you sure?" cannot distinguish deleting a
@@ -218,17 +275,17 @@ if (deleteButton) {
        there is no undo on this one. Dismissing is offered by name because it
        is almost always what someone reaching for delete actually wants. */
     const parts = [];
-    if (entries > 0) { parts.push(`${entries} check-in${entries === 1 ? '' : 's'}`); }
+    if (updates > 0) { parts.push(`${updates} update${updates === 1 ? '' : 's'}`); }
     if (photos > 0) { parts.push(`${photos} photo${photos === 1 ? '' : 's'}`); }
 
     const detail = parts.length > 0
       ? `This deletes ${parts.join(' and ')} permanently. There is no undo.\n\nIf it just turned out to be nothing, mark it Dismissed instead — that keeps the record.`
-      : 'This deletes the issue permanently. There is no undo.';
+      : 'This deletes the entry permanently. There is no undo.';
 
     if (!window.confirm(detail)) { return; }
 
-    apiPost('api/issue-delete.php', { id: issueId() })
-      .then(() => { window.location.href = 'issues.php'; })
+    apiPost('api/entry-delete.php', { id: entryId() })
+      .then(() => { window.location.href = 'log.php'; })
       .catch((error) => showSnackbar(explain(error), { isError: true }));
   });
 }

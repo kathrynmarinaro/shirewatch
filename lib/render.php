@@ -15,7 +15,7 @@
 
 declare(strict_types=1);
 
-require_once __DIR__ . '/issues.php';
+require_once __DIR__ . '/log.php';
 
 /**
  * One gallery tile.
@@ -97,12 +97,12 @@ function render_documents(array $media): string
  * A severity pill, or '' for NULL.
  *
  * THE EMPTY STRING IS THE WHOLE POINT. Rendering unset severities as a grey
- * "Watch" pill would put something that looks like data on every issue where
+ * "Watch" pill would put something that looks like data on every entry where
  * none was recorded (CLAUDE.md).
  */
 function render_severity(?int $severity): string
 {
-    $label = issue_severity_label($severity);
+    $label = entry_severity_label($severity);
     if ($label === '') {
         return '';
     }

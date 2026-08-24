@@ -3,7 +3,7 @@
  *
  * The tag lifts off every item it was on, by cascade. The usage counts come
  * back in the response so the screen can say what just happened — "removed
- * from 6 issues" — rather than the row simply vanishing.
+ * from 6 log entries" — rather than the row simply vanishing.
  *
  * THERE IS NO UNDO, and deliberately no soft-delete column. A deleted tag with
  * a `deleted_at` on it is a tag that still collides with a new one of the same

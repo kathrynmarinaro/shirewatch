@@ -15,17 +15,23 @@
  * than leaving them to be discovered in production, one at a time.
  *
  * What it deliberately includes:
- *   · issues in all four states, including two resolved by a service record
- *     and one dismissed
- *   · a THREE-YEAR timeline on one issue, so the progression view has
+ *   · log entries in all four states, including two resolved by the service
+ *     visit that fixed them and one dismissed
+ *   · a THREE-YEAR timeline on one entry, so the progression view has
  *     something to actually show
+ *   · BOTH KINDS OF UPDATE on the same timelines — notes and paid visits —
+ *     because the whole point of the merge is that they interleave
  *   · severities across all four levels AND several deliberately unset, which
  *     is the case that renders nothing (schema.sql)
  *   · tasks in BOTH recurrence shapes, several overdue by different amounts,
  *     one due today, one due tomorrow
  *   · a vendor with no rated jobs (so the average is NULL), one with a manual
  *     override, and one with no work at all
- *   · service records with and without cost, with and without a vendor
+ *   · paid work in BOTH the places it can happen: service updates on log
+ *     entries, and maintenance completions that cost money. The Service
+ *     screen reads across both, so a seed with only one half would make a
+ *     broken query look like a short list
+ *   · service events with and without a cost, with and without a vendor
  *   · a long title and a long instruction block, because those are what break
  *     a layout
  *
@@ -48,6 +54,7 @@ if (PHP_SAPI !== 'cli') {
 require_once __DIR__ . '/../lib/bootstrap.php';
 require_once __DIR__ . '/../lib/tags.php';
 require_once __DIR__ . '/../lib/media.php';
+require_once __DIR__ . '/../lib/log.php';
 
 $reset = in_array('--reset', array_slice($argv, 1), true);
 $today = sw_today();
@@ -71,9 +78,9 @@ if ($reset) {
      * per connection, and a delete order that only works with them enabled is
      * one that silently leaves orphans in the test harness. */
     foreach (array(
-        'media', 'issue_tags', 'task_tags', 'record_tags', 'vendor_tags',
-        'issue_updates', 'task_completions', 'task_reminder_sends',
-        'service_records', 'issues', 'maintenance_tasks', 'vendors',
+        'media', 'entry_tags', 'task_tags', 'vendor_tags',
+        'log_updates', 'task_completions', 'task_reminder_sends',
+        'log_entries', 'maintenance_tasks', 'vendors',
     ) as $table) {
         q("DELETE FROM $table");
     }
@@ -128,11 +135,11 @@ foreach ($vendors as $v) {
 }
 printf("%d vendors\n", count($vendorIds));
 
-/* ----------------------------------------------------------------- issues */
+/* ------------------------------------------------------------- log entries */
 
 /* title, description, status, severity, noticed days ago, check interval,
    last checked days ago, [location, category], [ [days ago, note, severity], … ] */
-$issues = array(
+$entries = array(
     array(
         'Hairline crack in the library ceiling, north-west corner',
         "Noticed it after the storm. About 30cm long. Photographed against the light switch for scale.",
@@ -203,8 +210,10 @@ $issues = array(
     ),
 );
 
-$issueIds = array();
-foreach ($issues as $spec) {
+$entryIds = array();
+$updateIds = array();          // [entry index][update index] => log_updates.id
+
+foreach ($entries as $spec) {
     list($title, $desc, $status, $severity, $noticedAgo, $interval, $checkedAgo, $tags, $updates) = $spec;
 
     $lastChecked = $checkedAgo === null ? null : ago($checkedAgo);
@@ -215,25 +224,30 @@ foreach ($issues as $spec) {
         ? null
         : (new DateTimeImmutable($lastChecked))->modify('+' . $interval . ' days')->format('Y-m-d');
 
-    q('INSERT INTO issues (property_id, title, description, status, severity, noticed_on,
-                           check_interval_days, last_checked_on, next_check_on, resolved_on)
+    q('INSERT INTO log_entries (property_id, title, description, status, severity, noticed_on,
+                                check_interval_days, last_checked_on, next_check_on, resolved_on)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         array(1, $title, $desc ?: null, $status, $severity, ago($noticedAgo),
               $interval, $lastChecked, $nextCheck,
               in_array($status, array('resolved', 'dismissed'), true) ? ago(max(1, (int) ($noticedAgo / 3))) : null));
 
-    $issueId = (int) db()->lastInsertId();
-    $issueIds[] = $issueId;
-    attach_tags('issue', $issueId, $tags);
+    $entryId = (int) db()->lastInsertId();
+    $index = count($entryIds);
+    $entryIds[] = $entryId;
+    $updateIds[$index] = array();
+    attach_tags('entry', $entryId, $tags);
 
     foreach ($updates as $u) {
-        q('INSERT INTO issue_updates (issue_id, noted_on, note, severity) VALUES (?, ?, ?, ?)',
-            array($issueId, ago($u[0]), $u[1], $u[2]));
-        seed_photo('issue_update', (int) db()->lastInsertId(), $u[0]);
+        q("INSERT INTO log_updates (entry_id, kind, noted_on, note, severity)
+           VALUES (?, 'note', ?, ?, ?)",
+            array($entryId, ago($u[0]), $u[1], $u[2]));
+        $updateId = (int) db()->lastInsertId();
+        $updateIds[$index][] = $updateId;
+        seed_photo('update', $updateId, $u[0]);
     }
-    seed_photo('issue', $issueId, $noticedAgo);
+    seed_photo('entry', $entryId, $noticedAgo);
 }
-printf("%d issues\n", count($issueIds));
+printf("%d log entries\n", count($entryIds));
 
 /* ------------------------------------------------------------------ tasks */
 
@@ -287,49 +301,118 @@ foreach ($starters as $spec) {
 }
 printf("%d maintenance tasks\n", count($taskIds));
 
-/* --------------------------------------------------------- service records */
+/* -------------------------------------------------- paid work, both halves */
 
-$records = array(
-    array('Rebuilt the shut-off valve', 'Brightwater Plumbing', 38, 285.00, 5, 1, 'Plumbing'),
-    array('Annual HVAC service', 'Hill Country HVAC', 120, 189.00, 4, null, 'HVAC'),
-    array('Replaced flashing in the roof valley', 'Marisol Roofing', 15, 1240.00, 5, 2, 'Roofing'),
-    array('Removed wasp nest', 'Ace Handyman', 295, 95.00, 4, 4, 'Pest'),
-    array('Cleared the downpipe', 'Ace Handyman', 415, null, 3, 6, 'Roofing'),
-    array('Septic pump-out', 'Ridgeline Septic', 500, 415.00, null, null, 'Septic'),
-    array('Re-hung the Sunroom door myself', null, 200, 24.50, null, null, 'Interior'),
-    array('Emergency call-out, burst hose bib', 'Brightwater Plumbing', 610, 460.00, 2, null, 'Plumbing'),
+/* SERVICE IS NOT A TABLE ANY MORE, so this seeds both places it can happen.
+ * A seed with only one half would make a broken query on the Service screen
+ * look like a short list rather than a bug — which is exactly the failure the
+ * merge introduced the possibility of. */
+
+/* ---- unplanned: a visit on the timeline of the thing that broke --------- */
+
+/* entry index, days ago, note, vendor, cost, rating, severity after */
+$visits = array(
+    /* An open entry with a visit already on it: called somebody, still not
+     * fixed. This is the case the merge exists for. */
+    array(1, 8,   'Emergency call-out, burst hose bib. Capped it, coming back for the valve.',
+          'Brightwater Plumbing', 460.00, 2, 3),
+    array(2, 15,  'Replaced flashing in the roof valley. Watching to see if it comes back.',
+          'Marisol Roofing', 1240.00, 5, null),
+    array(4, 295, 'Removed the nest and sealed the gap under the eave.', 'Ace Handyman', 95.00, 4, null),
+    /* No cost recorded — the Service screen must count this row without
+     * summing it as zero. */
+    array(6, 415, 'Cleared the downpipe.', 'Ace Handyman', null, 3, null),
+    /* Somebody not in the directory. The name is kept anyway. */
+    array(7, 30,  'Damp meter reading behind the closet wall — nothing.',
+          "Neighbour's brother", 0, null, null),
 );
 
-$recordIds = array();
-foreach ($records as $r) {
-    list($title, $vendorName, $daysAgo, $cost, $rating, $issueIndex, $category) = $r;
-    $vendorId = $vendorName === null ? null : ($vendorIds[$vendorName] ?? null);
+$visitCount = 0;
+$fixedBy = array();            // entry index => the update that closed it
 
-    q('INSERT INTO service_records
-         (property_id, vendor_id, vendor_name, title, performed_on, cost, rating, issue_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-        array(1, $vendorId, $vendorName, $title, ago($daysAgo), $cost, $rating,
-              $issueIndex === null ? null : ($issueIds[$issueIndex] ?? null)));
+foreach ($visits as $v) {
+    list($entryIndex, $daysAgo, $note, $vendorName, $cost, $rating, $severity) = $v;
+    if (!isset($entryIds[$entryIndex])) {
+        continue;
+    }
+    $vendorId = $vendorIds[$vendorName] ?? null;
 
-    $recordId = (int) db()->lastInsertId();
-    $recordIds[] = $recordId;
-    attach_tags('record', $recordId, array(array(TAG_CATEGORY, $category)));
+    q("INSERT INTO log_updates
+         (entry_id, kind, noted_on, note, severity, vendor_id, vendor_name, cost, rating)
+       VALUES (?, 'service', ?, ?, ?, ?, ?, ?, ?)",
+        array($entryIds[$entryIndex], ago($daysAgo), $note, $severity,
+              $vendorId, $vendorName, $cost, $rating));
 
-    /* Two or three photos plus a document, so the batch gallery and the
-     * document list are both exercised on the same screen. */
-    seed_photo('record', $recordId, $daysAgo);
-    seed_photo('record', $recordId, $daysAgo);
+    $updateId = (int) db()->lastInsertId();
+    $visitCount++;
+    $fixedBy[$entryIndex] = $updateId;
+
+    seed_photo('update', $updateId, $daysAgo);
     if ($cost !== null) {
-        seed_document($recordId, 'invoice-' . $recordId . '.pdf');
+        seed_document('update', $updateId, 'invoice-' . $updateId . '.pdf');
     }
 }
 
-/* Two issues were closed BY a record. This is the link that makes an issue's
- * timeline end with what fixed it (schema.sql). */
-q('UPDATE issues SET resolved_by_record_id = ? WHERE id = ?', array($recordIds[3], $issueIds[4]));
-q('UPDATE issues SET resolved_by_record_id = ? WHERE id = ?', array($recordIds[4], $issueIds[6]));
+/* Two entries were closed BY one of their own updates. This is the link that
+ * makes a timeline end with what fixed it (schema.sql), and it is always
+ * optional — the other resolved entries have no update attached. */
+foreach (array(4, 6) as $closed) {
+    if (isset($fixedBy[$closed], $entryIds[$closed])) {
+        q('UPDATE log_entries SET resolved_by_update_id = ? WHERE id = ?',
+            array($fixedBy[$closed], $entryIds[$closed]));
+    }
+}
 
-printf("%d service records\n", count($recordIds));
+/* A visit IS a check-in, so the entries it touched have new derived columns.
+ * Run the app's own rule rather than writing them here — a second
+ * implementation of entry_recompute() in a seed script is how a seed starts
+ * showing dates the app would never produce. */
+foreach (array_keys($fixedBy) as $touched) {
+    entry_recompute($entryIds[$touched]);
+}
+
+printf("%d service visits on log entries\n", $visitCount);
+
+/* ---- planned: maintenance somebody was paid to do ---------------------- */
+
+/* A PAID ROUTINE SERVICE IS A MAINTENANCE COMPLETION THAT COST MONEY, not a
+ * problem that had to be logged. Filing the annual HVAC service as a log entry
+ * would mean inventing a fault that never existed. */
+
+/* task title, days ago, note, vendor, cost, rating */
+$paid = array(
+    array('Change HVAC filter', 120, 'Annual service at the same visit — coils cleaned, refrigerant checked.',
+          'Hill Country HVAC', 189.00, 4),
+    array('Pump septic tank', 500, 'Pumped and inspected the baffles.', 'Ridgeline Septic', 415.00, null),
+    array('Clean gutters', 210, 'Whole house, plus the studio.', 'Ace Handyman', 140.00, 4),
+    /* Materials only, nobody paid. Still a cost, so it belongs on the Service
+     * screen — "what did the house cost" is not only "who did we call". */
+    array('Check caulking and exterior seals', 200, 'Two tubes of sealant.', null, 24.50, null),
+);
+
+$paidCount = 0;
+foreach ($paid as $p) {
+    list($taskTitle, $daysAgo, $note, $vendorName, $cost, $rating) = $p;
+
+    $task = q('SELECT id FROM maintenance_tasks WHERE title = ? LIMIT 1', array($taskTitle))->fetch();
+    if ($task === false) {
+        continue;
+    }
+    $vendorId = $vendorName === null ? null : ($vendorIds[$vendorName] ?? null);
+
+    q('INSERT INTO task_completions (task_id, completed_on, note, vendor_id, vendor_name, cost, rating)
+       VALUES (?, ?, ?, ?, ?, ?, ?)',
+        array((int) $task['id'], ago($daysAgo), $note, $vendorId, $vendorName, $cost, $rating));
+
+    $completionId = (int) db()->lastInsertId();
+    $paidCount++;
+
+    seed_photo('completion', $completionId, $daysAgo);
+    if ($cost !== null) {
+        seed_document('completion', $completionId, 'receipt-' . $completionId . '.pdf');
+    }
+}
+printf("%d paid maintenance completions\n", $paidCount);
 
 /* ------------------------------------------------------------------ media */
 
@@ -386,8 +469,13 @@ function seed_photo(string $ownerType, int $ownerId, int $daysAgo): void
 }
 
 /** A one-page PDF, so the document list has a real file to link to. */
-function seed_document(int $recordId, string $filename): void
+function seed_document(string $ownerType, int $ownerId, string $filename): void
 {
+    $column = media_owner_column($ownerType);
+    if ($column === null) {
+        return;
+    }
+
     $slug = imageproc_new_slug();
     imageproc_ensure_dir('docs');
     $path = imageproc_upload_path('docs', $slug, 'pdf');
@@ -400,10 +488,10 @@ function seed_document(int $recordId, string $filename): void
           . "3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 300 120]>>endobj\n";
     file_put_contents($path, "%PDF-1.4\n" . $body . "trailer<</Root 1 0 R>>\n%%EOF\n");
 
-    q("INSERT INTO media (kind, service_record_id, slug, ext, original_path,
+    q("INSERT INTO media (kind, $column, slug, ext, original_path,
                           original_filename, mime, bytes, caption, status)
        VALUES ('document', ?, ?, 'pdf', ?, ?, 'application/pdf', ?, 'seed', 'ready')",
-        array($recordId, $slug, imageproc_relative_path('docs', $slug, 'pdf'),
+        array($ownerId, $slug, imageproc_relative_path('docs', $slug, 'pdf'),
               $filename, (int) filesize($path)));
 }
 

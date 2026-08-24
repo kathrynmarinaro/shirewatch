@@ -56,26 +56,26 @@ screen_head(app_name(), page_menu());
     <p class="empty">Nothing needs doing. The house is fine.</p>
   <?php endif; ?>
 
-  <?php if ($now['issues'] !== array()): ?>
+  <?php if ($now['log'] !== array()): ?>
     <section class="action-group">
-      <h2 class="cat-head">Issues <span class="cat-count"><?= count($now['issues']) ?></span></h2>
+      <h2 class="cat-head">Log <span class="cat-count"><?= count($now['log']) ?></span></h2>
       <ul class="list">
-        <?php foreach ($now['issues'] as $issue): ?>
+        <?php foreach ($now['log'] as $entry): ?>
           <li class="list-row">
             <div class="row-slide">
-              <a class="row-body" href="issue.php?id=<?= (int) $issue['id'] ?>">
-                <span class="row-text"><?= h($issue['title']) ?></span>
+              <a class="row-body" href="entry.php?id=<?= (int) $entry['id'] ?>">
+                <span class="row-text"><?= h($entry['title']) ?></span>
                 <span class="row-sub">
-                  <?php if ($issue['status'] === ISSUE_ACTIVE): ?>
+                  <?php if ($entry['status'] === LOG_ACTIVE): ?>
                     Needs doing
-                  <?php elseif ($issue['next_check_on'] !== null): ?>
-                    <span class="is-overdue">Check <?= h(fmt_relative_due($issue['next_check_on'], $today)) ?></span>
+                  <?php elseif ($entry['next_check_on'] !== null): ?>
+                    <span class="is-overdue">Check <?= h(fmt_relative_due($entry['next_check_on'], $today)) ?></span>
                   <?php endif; ?>
-                  <?php $names = tag_names($issue['tags']); ?>
+                  <?php $names = tag_names($entry['tags']); ?>
                   <?= $names === array() ? '' : ' · ' . h(implode(' · ', $names)) ?>
                 </span>
               </a>
-              <?= render_severity($issue['severity']) ?>
+              <?= render_severity($entry['severity']) ?>
               <?= render_row_edit() ?>
             </div>
           </li>
@@ -139,13 +139,13 @@ screen_head(app_name(), page_menu());
       ?>
         <li class="timeline-head" data-date="<?= h($row['on_date']) ?>"><?= h(fmt_date($row['on_date'], 'l j F')) ?></li>
       <?php endif; ?>
-        <li class="timeline-item <?= $row['kind'] === 'issue' ? 'is-issue' : '' ?> <?= $row['projected'] ? 'is-projected' : '' ?>">
+        <li class="timeline-item <?= $row['kind'] === 'entry' ? 'is-entry' : '' ?> <?= $row['projected'] ? 'is-projected' : '' ?>">
           <a class="timeline-title"
-             href="<?= $row['kind'] === 'issue' ? 'issue.php?id=' : 'task.php?id=' ?><?= (int) $row['id'] ?>">
+             href="<?= $row['kind'] === 'entry' ? 'entry.php?id=' : 'task.php?id=' ?><?= (int) $row['id'] ?>">
             <?= h($row['title']) ?>
           </a>
           <span class="timeline-sub">
-            <?= $row['kind'] === 'issue' ? 'Check back' : 'Maintenance' ?>
+            <?= $row['kind'] === 'entry' ? 'Check back' : 'Maintenance' ?>
             <?php /* Projected rows are PREDICTIONS, not stored rows. Completing
                      a task early moves everything after it, and the app has not
                      promised you these dates. */ ?>

@@ -6,8 +6,9 @@
  * WRITES A FILE INTO public/uploads/.
  * ---------------------------------------------------------------------------
  *
- * Two owners need this — an issue's timeline photo and a service record's
- * batch of invoices — and they need it to behave identically. Foundation owns
+ * Three owners need this — a log entry's opening photo, one update's photos and
+ * invoice, and a maintenance completion's receipt — and they need it to behave
+ * identically. Foundation owns
  * it so there is one upload path, one validation rule and one place where a
  * file gets deleted.
  *
@@ -76,9 +77,9 @@ const MEDIA_DOC_TYPES = array('application/pdf' => 'pdf');
 function media_owner_column(string $type): ?string
 {
     $map = array(
-        'issue'        => 'issue_id',
-        'issue_update' => 'issue_update_id',
-        'record'       => 'service_record_id',
+        'entry'      => 'entry_id',       // a log entry's opening photos
+        'update'     => 'update_id',      // one update's photos, or its invoice
+        'completion' => 'completion_id',  // a maintenance completion's receipt
     );
     return $map[$type] ?? null;
 }
@@ -174,7 +175,7 @@ function media_display_name(string $raw): string
  * to a PDF.
  *
  * @param array{name:string,tmp_name:string,size:int,error:int} $file
- * @param string $ownerType 'issue' | 'issue_update' | 'record'
+ * @param string $ownerType 'entry' | 'update' | 'completion'
  * @throws RuntimeException with a machine-readable reason, for the caller's
  *         per-file rejection list. A batch must never fail as a whole because
  *         one file in it was a screenshot of a screenshot.

@@ -159,6 +159,37 @@ if (completeButton) {
   });
 }
 
+/* The same completion, with a bill attached.
+ *
+ * A PAID ROUTINE SERVICE IS A COMPLETION THAT COST MONEY. It goes through the
+ * same endpoint as the plain button above — one code path moves a due date,
+ * and adding a second one for the paid case is how the two would eventually
+ * disagree about what "done" means. */
+const completeForm = document.getElementById('complete-form');
+if (completeForm) {
+  completeForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const data = new FormData(completeForm);
+
+    try {
+      await apiPost('api/task-complete.php', {
+        id: Number(completeForm.dataset.id),
+        completed_on: String(data.get('completed_on') || ''),
+        note: String(data.get('note') || ''),
+        vendor_id: Number(data.get('vendor_id') || 0),
+        vendor_name: String(data.get('vendor_name') || ''),
+        /* Sent as typed. An empty cost is "not recorded", which the server
+           stores as NULL — turning it into 0 here would say it was free. */
+        cost: String(data.get('cost') || ''),
+        rating: String(data.get('rating') || ''),
+      });
+      window.location.reload();
+    } catch (error) {
+      showSnackbar(explain(error), { isError: true });
+    }
+  });
+}
+
 const pauseButton = document.getElementById('task-pause');
 if (pauseButton) {
   pauseButton.addEventListener('click', async () => {

@@ -21,6 +21,7 @@ require_once __DIR__ . '/../lib/bootstrap.php';
 require_once __DIR__ . '/../lib/layout.php';
 require_once __DIR__ . '/../lib/tasks.php';
 require_once __DIR__ . '/../lib/render.php';
+require_once __DIR__ . '/../lib/vendors.php';
 
 require_login_page();
 
@@ -38,7 +39,8 @@ $history  = $task === null ? array() : task_completions($task['id']);
 $selected = $task === null ? array() : array_column(tags_for('task', $task['id']), 'id');
 $pickable = array_merge(tags_of_kind(TAG_LOCATION), tags_of_kind(TAG_CATEGORY));
 
-$months = $task === null ? array() : recur_parse_months($task['recur_months']);
+$months  = $task === null ? array() : recur_parse_months($task['recur_months']);
+$vendors = $isNew ? array() : vendors_list();
 
 page_head($isNew ? 'Add a task' : $task['title'], 'maintenance');
 screen_head($isNew ? 'Add a task' : 'Task', page_menu());
@@ -167,6 +169,74 @@ screen_head($isNew ? 'Add a task' : 'Task', page_menu());
         Next: <?= h(fmt_date($task['next_due_on'])) ?>
       </span>
     </p>
+
+    <?php /* A PAID ROUTINE SERVICE IS A COMPLETION THAT COST MONEY, not a
+             problem you had to log. Filing the annual HVAC visit as a log
+             entry would mean inventing a fault that never existed — so the
+             money fields live here, on the completion.
+
+             Behind a <details> because the common case is you did it yourself
+             in ten minutes, and that case must stay one tap. Open it and the
+             button above becomes the one inside, so there is never a form you
+             filled in and a button that ignores it. */ ?>
+    <details class="accordion" id="paid-completion">
+      <summary class="accordion-head">Somebody was paid for it</summary>
+      <div class="accordion-body">
+        <form id="complete-form" data-id="<?= (int) $task['id'] ?>">
+          <div class="row">
+            <label class="field">
+              <span>When</span>
+              <input class="input" type="date" name="completed_on" value="<?= h($today) ?>">
+            </label>
+            <label class="field">
+              <span>Who</span>
+              <select class="input" name="vendor_id">
+                <option value="">Not in the directory</option>
+                <?php foreach ($vendors as $vendor): ?>
+                  <option value="<?= (int) $vendor['id'] ?>"><?= h($vendor['name']) ?></option>
+                <?php endforeach; ?>
+              </select>
+            </label>
+          </div>
+
+          <label class="field">
+            <span>…or type a name</span>
+            <input class="input" type="text" name="vendor_name" maxlength="160">
+          </label>
+
+          <div class="row">
+            <label class="field">
+              <span>Cost</span>
+              <?php /* LEFT EMPTY MEANS "NOT RECORDED", WHICH IS NOT "FREE". */ ?>
+              <input class="input" type="text" inputmode="decimal" name="cost"
+                     placeholder="Blank if not recorded">
+            </label>
+            <label class="field">
+              <span>How did it go?</span>
+              <select class="input" name="rating">
+                <option value="">Not rated</option>
+                <?php foreach (array(1, 2, 3, 4, 5) as $star): ?>
+                  <option value="<?= $star ?>"><?= $star ?> star<?= $star === 1 ? '' : 's' ?></option>
+                <?php endforeach; ?>
+              </select>
+            </label>
+          </div>
+
+          <label class="field">
+            <span>Notes</span>
+            <textarea class="input" name="note" rows="2"
+                      placeholder="Coils cleaned, refrigerant checked"></textarea>
+          </label>
+
+          <p class="row-between">
+            <button class="btn-primary" type="submit">Mark done</button>
+          </p>
+        </form>
+        <p class="hint">
+          This shows up under Service in the menu, beside the repairs.
+        </p>
+      </div>
+    </details>
   </section>
 
   <section class="stack">
@@ -177,23 +247,32 @@ screen_head($isNew ? 'Add a task' : 'Task', page_menu());
     <?php if ($history === array()): ?>
       <p class="empty">Never done — or never logged here, anyway.</p>
     <?php else: ?>
-      <?php /* NEWEST FIRST, unlike an issue's timeline. This is a log, and the
-               question you ask of it is "when did I last do this", which is the
-               top row. */ ?>
+      <?php /* NEWEST FIRST, unlike a log entry's timeline. That is a story and
+               reads forwards; this is a record, and the question you ask of it
+               is "when did I last do this", which is the top row. */ ?>
       <ul class="list">
         <?php foreach ($history as $entry): ?>
-          <li class="list-row" data-completion-id="<?= (int) $entry['id'] ?>">
+          <li class="list-row" id="completion-<?= (int) $entry['id'] ?>"
+              data-completion-id="<?= (int) $entry['id'] ?>">
             <div class="row-slide">
               <span class="row-body">
                 <span class="row-text"><?= h(fmt_date($entry['completed_on'])) ?></span>
-                <?php if ($entry['note'] !== '' || $entry['service_record_id'] !== null): ?>
+                <?php $paid = $entry['vendor_name'] !== '' || $entry['cost'] !== null; ?>
+                <?php if ($entry['note'] !== '' || $paid): ?>
                   <span class="row-sub">
                     <?= h($entry['note']) ?>
-                    <?php if ($entry['service_record_id'] !== null): ?>
-                      <a href="record.php?id=<?= (int) $entry['service_record_id'] ?>">See the record</a>
+                    <?php if ($paid): ?>
+                      <?php /* A completion that cost money IS the service
+                               record — there is no separate row to link to
+                               any more. */ ?>
+                      <?= $entry['note'] !== '' ? ' · ' : '' ?>
+                      <?= $entry['vendor_name'] === '' ? '' : h($entry['vendor_name']) ?>
+                      <?php $cost = render_cost($entry['cost']); ?>
+                      <?= $cost === '' ? '' : ' · ' . h($cost) ?>
                     <?php endif; ?>
                   </span>
                 <?php endif; ?>
+                <?= render_stars($entry['rating'] === null ? null : (float) $entry['rating']) ?>
               </span>
               <button class="tap-text" type="button"
                       data-uncomplete="<?= (int) $entry['id'] ?>">Undo</button>

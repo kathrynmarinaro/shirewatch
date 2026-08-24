@@ -2,7 +2,7 @@
 /* The dashboard's two reads: what needs doing now, and what is coming.
  *
  * ---------------------------------------------------------------------------
- * THIS FILE OWNS NO TABLES. It composes lib/issues.php and lib/tasks.php.
+ * THIS FILE OWNS NO TABLES. It composes lib/log.php and lib/tasks.php.
  * ---------------------------------------------------------------------------
  *
  * That is the point: "needs action" and "what is due" are defined once, in the
@@ -13,8 +13,9 @@
  * THE SHAPE, AND WHERE IT DEPARTS FROM THE BRIEF (DELEGATION-PLAN.md §2.13).
  * ---------------------------------------------------------------------------
  *
- * 1. NEEDS ACTION NOW — split into an issues group and a maintenance group.
- *    That is the brief's "separate sections for issues vs. maintenance",
+ * 1. NEEDS ACTION NOW — split into a Log group and a Maintenance group.
+ *    That is the brief's "separate sections for issues vs. maintenance" —
+ *    issues being what the log holds —
  *    honoured where it earns its place: deciding what to do this morning,
  *    "call a plumber" and "change a filter" are different kinds of thing.
  *
@@ -26,28 +27,28 @@
 
 declare(strict_types=1);
 
-require_once __DIR__ . '/issues.php';
+require_once __DIR__ . '/log.php';
 require_once __DIR__ . '/tasks.php';
 
 /**
  * Everything already due, in two groups.
  *
- * @return array{issues: list<array>, tasks: list<array>, total: int}
+ * @return array{log: list<array>, tasks: list<array>, total: int}
  */
 function dashboard_now(string $today): array
 {
-    $issues = issues_needing_action($today);
+    $entries = entries_needing_action($today);
     $tasks  = tasks_due($today);
 
     return array(
-        'issues' => $issues,
-        'tasks'  => $tasks,
-        'total'  => count($issues) + count($tasks),
+        'log'   => $entries,
+        'tasks' => $tasks,
+        'total' => count($entries) + count($tasks),
     );
 }
 
 /**
- * The forward stream: future maintenance and issue check-backs, merged.
+ * The forward stream: future maintenance and log-entry check-backs, merged.
  *
  * PAGED BY KEYSET, NEVER OFFSET. The cursor is the previous page's last
  * (on_date, kind, id). With OFFSET, anything inserted mid-scroll silently
@@ -68,7 +69,7 @@ function dashboard_timeline(string $afterDate, ?string $afterKey = null, ?int $l
     /* Maintenance is PROJECTED forward — a task stores only its next
      * occurrence, so a quarterly one would appear once and the stream would
      * run dry after a month. Issue check-backs are NOT projected: a task
-     * genuinely recurs forever, but an issue's next look-at depends on what
+     * genuinely recurs forever, but a log entry's next look-at depends on what
      * you see when you look, so a chain of them would be invented schedule. */
     $rows = array();
 
@@ -83,13 +84,13 @@ function dashboard_timeline(string $afterDate, ?string $afterKey = null, ?int $l
         );
     }
 
-    foreach (issues_upcoming_checks($afterDate) as $item) {
+    foreach (entries_upcoming_checks($afterDate) as $item) {
         if ($item['on_date'] > $until) {
             continue;
         }
         $rows[] = array(
             'on_date'   => $item['on_date'],
-            'kind'      => 'issue',
+            'kind'      => 'entry',
             'id'        => $item['id'],
             'title'     => $item['title'],
             'projected' => false,

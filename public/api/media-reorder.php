@@ -5,7 +5,7 @@
  * so a later insertion has somewhere to land without renumbering everything.
  *
  * Order matters on a service record — the invoice first, then the damage — and
- * on an issue's opening photo set, where the widest shot wants to be the one
+ * on an entry's opening photo set, where the widest shot wants to be the one
  * the card shows.
  */
 

@@ -25,9 +25,9 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/../../lib/bootstrap.php';
-require_once __DIR__ . '/../../lib/issues.php';
+require_once __DIR__ . '/../../lib/log.php';
 require_once __DIR__ . '/../../lib/tasks.php';
-require_once __DIR__ . '/../../lib/records.php';
+require_once __DIR__ . '/../../lib/service.php';
 
 require_login_api();
 require_method('GET');
@@ -70,7 +70,7 @@ $zip->addFromString(
 
 /* A CSV of the money beside the JSON. The JSON is the real backup; this is the
  * file you can open without a programmer when somebody asks what the roof cost. */
-$zip->addFromString('service-records.csv', export_records_csv($data['service_records']));
+$zip->addFromString('service.csv', export_service_csv());
 
 $zip->addFromString('README.txt', export_readme($stamp, count($data['media'])));
 
@@ -132,36 +132,41 @@ function export_payload(): array
         'schema_note'  => 'Dates are Y-m-d. NULL means unset, never zero — see CLAUDE.md.',
         'properties'   => q('SELECT * FROM properties')->fetchAll(),
         'tags'         => q('SELECT * FROM tags ORDER BY kind, sort_order, name')->fetchAll(),
-        'issues'       => q('SELECT * FROM issues ORDER BY id')->fetchAll(),
-        'issue_updates'=> q('SELECT * FROM issue_updates ORDER BY issue_id, noted_on, id')->fetchAll(),
-        'issue_tags'   => q('SELECT * FROM issue_tags')->fetchAll(),
+        'log_entries'  => q('SELECT * FROM log_entries ORDER BY id')->fetchAll(),
+        'log_updates'  => q('SELECT * FROM log_updates ORDER BY entry_id, noted_on, id')->fetchAll(),
+        'entry_tags'   => q('SELECT * FROM entry_tags')->fetchAll(),
         'tasks'        => q('SELECT * FROM maintenance_tasks ORDER BY id')->fetchAll(),
         'task_completions' => q('SELECT * FROM task_completions ORDER BY task_id, completed_on')->fetchAll(),
         'task_tags'    => q('SELECT * FROM task_tags')->fetchAll(),
         'vendors'      => q('SELECT * FROM vendors ORDER BY name')->fetchAll(),
         'vendor_tags'  => q('SELECT * FROM vendor_tags')->fetchAll(),
-        'service_records' => q('SELECT * FROM service_records ORDER BY performed_on DESC, id DESC')->fetchAll(),
-        'record_tags'  => q('SELECT * FROM record_tags')->fetchAll(),
         'media'        => q('SELECT * FROM media ORDER BY id')->fetchAll(),
     );
 }
 
-/** The service records as a spreadsheet-openable CSV. */
-function export_records_csv(array $records): string
+/**
+ * Every paid visit as a spreadsheet-openable CSV.
+ *
+ * Built from service_list() rather than from one table, because "service" is
+ * no longer a table — it happens either on a log entry or on a maintenance
+ * completion, and "what did we spend" needs both.
+ */
+function export_service_csv(): string
 {
     $out = fopen('php://temp', 'r+');
-    fputcsv($out, array('Date', 'What', 'Vendor', 'Cost', 'Rating', 'Notes'));
+    fputcsv($out, array('Date', 'What', 'Kind', 'Vendor', 'Cost', 'Rating', 'Notes'));
 
-    foreach ($records as $row) {
+    foreach (service_list() as $row) {
         fputcsv($out, array(
-            $row['performed_on'],
+            $row['on_date'],
             $row['title'],
-            $row['vendor_name'] ?? '',
+            $row['source'] === 'log' ? 'Repair' : 'Maintenance',
+            $row['vendor_name'],
             /* An empty cell, NOT a zero. "Not recorded" is not "free", and a
              * spreadsheet full of zeros would sum to a number that is wrong. */
             $row['cost'] ?? '',
             $row['rating'] ?? '',
-            $row['description'] ?? '',
+            $row['note'],
         ));
     }
 
@@ -179,7 +184,7 @@ function export_readme(string $stamp, int $mediaCount): string
     return "Shirewatch export — " . $stamp . "\n"
         . str_repeat('=', 32) . "\n\n"
         . "data.json             every table, as plain JSON\n"
-        . "service-records.csv   the money, openable in a spreadsheet\n"
+        . "service.csv           the money, openable in a spreadsheet\n"
         . "uploads/              " . $mediaCount . " media rows' files, at the paths data.json refers to\n\n"
         . "THE PHOTOS ARE THE PART THAT CANNOT BE REGENERATED. The database can\n"
         . "be retyped; the full-resolution originals under uploads/original/ are\n"
