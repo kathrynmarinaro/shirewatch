@@ -220,7 +220,11 @@ $asks = static function (string $table) use ($dryRun): string {
     if (!$dryRun) {
         return $table;
     }
-    $old = array('log_updates' => 'issue_updates', 'log_entries' => 'issues');
+    $old = array(
+        'log_updates' => 'issue_updates',
+        'log_entries' => 'issues',
+        'entry_tags'  => 'issue_tags',
+    );
     return isset($old[$table]) && has_table($old[$table]) ? $old[$table] : $table;
 };
 
@@ -256,9 +260,10 @@ $asks = static function (string $table) use ($dryRun): string {
      * migration that finishes and one that leaves every tag filter broken.
      * The foreign key has to come off first: MariaDB refuses to rename a
      * column an existing constraint names. */
-    if (has_table('entry_tags') && !has_column('entry_tags', 'entry_id')) {
+    $tagTable = $asks('entry_tags');
+    if (has_table($tagTable) && !has_column($tagTable, 'entry_id')) {
         step('entry_tags: issue_id -> entry_id');
-        foreach (constraints_on('entry_tags') as $fk) {
+        foreach (constraints_on($tagTable) as $fk) {
             run('ALTER TABLE entry_tags DROP FOREIGN KEY `' . $fk . '`', $dryRun);
         }
         run('ALTER TABLE entry_tags CHANGE issue_id entry_id INT UNSIGNED NOT NULL', $dryRun);
